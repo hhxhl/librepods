@@ -381,6 +381,13 @@ fun AppSettingsScreen(
                     viewModel.setVendorIdHook(enabled)
                 }
             )
+            StyledToggle(
+                label = stringResource(R.string.enable_att_connection),
+                description = stringResource(R.string.enable_att_connection_description),
+                checked = state.enableAttConnection,
+                enabled = state.vendorIdHook,
+                onCheckedChange = viewModel::setEnableAttConnection
+            )
         }
 
         if (!BuildConfig.PLAY_BUILD) {

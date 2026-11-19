@@ -697,6 +697,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     popupShown = false
                     updateNotificationContent(false)
                     aacpManager.disconnected()
+                    attManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
                 }
@@ -880,11 +881,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     )
                 }
 
-                if (batteryNotification.getBattery()[0].status == BatteryStatus.CHARGING && batteryNotification.getBattery()[1].status == BatteryStatus.CHARGING) {
-                    disconnectAudio(this@AirPodsService, device)
-                } else {
-                    connectAudio(this@AirPodsService, device)
-                }
+                // Battery updates are informational. Connecting or disconnecting A2DP
+                // for every report can repeatedly perturb an already-active audio link.
+                // Audio routing remains driven by ear-state transitions and explicit takeover.
             }
 
             override fun onEarDetectionReceived(earDetection: ByteArray) {
@@ -944,9 +943,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     MediaController.sendPause()
                     MediaController.pausedForOtherDevice = true
                     otherDeviceTookOver = true
-                    disconnectAudio(
-                        this@AirPodsService, device
-                    )
+                    // Do not force an A2DP/HEADSET connection policy change here.
+                    // Let the OS and AirPods handle profile handover to the other device.
                 }
             }
 
@@ -965,13 +963,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     byteArrayOf(0x00)
                 )
                 otherDeviceTookOver = true
-                disconnectAudio(
-                    this@AirPodsService, device
-                )
+                // Keep the AACP ownership handoff, but do not forcibly disconnect
+                // local audio profiles. This avoids fighting the OS's A2DP routing.
                 if (reasonReverseTapped) {
-                    Log.d(TAG, "reverse tapped, disconnecting audio")
+                    Log.d(TAG, "reverse tapped, yielding audio ownership")
                     disconnectedBecauseReversed = true
-                    disconnectAudio(this@AirPodsService, device)
                     showIsland(
                         this@AirPodsService,
                         (batteryNotification.getBattery()
@@ -1271,7 +1267,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (MediaController.getMusicActive()) {
                     MediaController.userPlayedTheMedia = true
                 }
-            } else if (newInEarData == listOf(false, false)) {
+            } else if (newInEarData == listOf(false, false) && inEarData != listOf(false, false)) {
+                // Only act on the transition to both out-of-ear, not repeated reports.
                 MediaController.sendPause(force = true)
                 if (config.disconnectWhenNotWearing) {
                     disconnectAudio(this@AirPodsService, device)
@@ -2651,26 +2648,42 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     try {
                         socket.connect()
                         this@AirPodsService.device = device
-                        val xposedRemotePref = XposedRemotePrefProvider.create()
-                        val attSocket = if (xposedRemotePref.getBoolean("vendor_id_hook", false)) {
-                            createBluetoothSocket(
-                                adapter,
-                                device,
-                                ParcelUuid.fromString("00000000-0000-0000-0000-000000000000"),
-                                31
-                            )
-                        } else null
-                        attSocket?.connect()
-
-                        if (attSocket != null) {
-                            attManager.startReader()
-                            attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
-                            attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
-                            attManager.readCharacteristic(ATTHandles.HEARING_AID)
-                        }
-
+                        // AACP is sufficient for battery, ANC, ear detection and routing.
+                        // The separate ATT L2CAP connection has caused periodic audio
+                        // disconnects on some devices, so keep it opt-in (default off).
+                        // Vendor ID Hook must stay independent: it is also used by takeover.
                         BluetoothConnectionManager.aacpSocket = socket
-                        BluetoothConnectionManager.attSocket = attSocket
+                        BluetoothConnectionManager.attSocket = null
+                        val enableAtt = sharedPreferences.getBoolean("enable_att_connection", false) &&
+                            XposedRemotePrefProvider.create().getBoolean("vendor_id_hook", false)
+                        if (enableAtt) {
+                            var optionalAttSocket: BluetoothSocket? = null
+                            try {
+                                val connectedAttSocket = createBluetoothSocket(
+                                    adapter,
+                                    device,
+                                    ParcelUuid.fromString("00000000-0000-0000-0000-000000000000"),
+                                    31
+                                )
+                                optionalAttSocket = connectedAttSocket
+                                connectedAttSocket.connect()
+                                // Publish the ATT socket before starting its reader thread.
+                                BluetoothConnectionManager.attSocket = connectedAttSocket
+                                attManager.startReader()
+                                attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
+                                attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
+                                attManager.readCharacteristic(ATTHandles.HEARING_AID)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Optional ATT connection failed; keeping AACP connected", e)
+                                attManager.disconnected()
+                                try {
+                                    optionalAttSocket?.close()
+                                } catch (closeError: Exception) {
+                                    Log.w(TAG, "Failed to close optional ATT socket", closeError)
+                                }
+                                BluetoothConnectionManager.attSocket = null
+                            }
+                        }
 
                         // Create AirPodsInstance from stored config if available
                         if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
@@ -2877,6 +2890,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 //        isConnectedLocally = false
         aacpManager.disconnected()
+        attManager.disconnected()
 
         BluetoothConnectionManager.aacpSocket = null
         BluetoothConnectionManager.attSocket = null

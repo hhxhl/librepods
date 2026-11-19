@@ -240,6 +240,8 @@
     <string name="yes">Yes</string>
     <string name="settings">Settings</string>
     <string name="requires_xposed">requires xposed</string>
+    <string name="enable_att_connection">Enable ATT advanced features (unstable)</string>
+    <string name="enable_att_connection_description">Off by default to prevent repeated Bluetooth audio disconnects. Required for hearing aid, advanced transparency, and loud sound reduction controls. Takes effect after reconnecting AirPods.</string>
     <string name="bypass_compatibility_check">Bypass compatibility check</string>
     <string name="bypass_compatiblity_check_confirmation">Are you sure your device is supported natively/you have Xposed module enabled?</string>
     <string name="not_supported">Not supported</string>

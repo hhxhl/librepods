@@ -32,6 +32,7 @@ data class AppSettingsUiState(
     val cameraPackageValue: String = "",
     val cameraPackageError: String? = null,
     val vendorIdHook: Boolean = false,
+    val enableAttConnection: Boolean = false,
     val isPremium: Boolean = false,
     val connectionSuccessful: Boolean = false,
     val showBottomSheetPopup: Boolean = true,
@@ -149,6 +150,7 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
                 vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false),
+                enableAttConnection = sharedPreferences.getBoolean("enable_att_connection", false),
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
                 showIslandPopup = sharedPreferences.getBoolean("show_island_popup", true),
@@ -241,6 +243,11 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     fun setVendorIdHook(enabled: Boolean) {
         xposedRemotePref.putBoolean("vendor_id_hook", enabled)
         _uiState.update { it.copy(vendorIdHook = enabled) }
+    }
+
+    fun setEnableAttConnection(enabled: Boolean) {
+        sharedPreferences.edit { putBoolean("enable_att_connection", enabled) }
+        _uiState.update { it.copy(enableAttConnection = enabled) }
     }
 
     fun setShowBottomSheetPopup(enabled: Boolean) {
