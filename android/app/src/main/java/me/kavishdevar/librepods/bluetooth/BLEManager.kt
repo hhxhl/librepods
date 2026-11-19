@@ -82,7 +82,8 @@ class BLEManager(private val context: Context) {
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var currentGlobalLidState: Boolean? = null
     private var lastBroadcastTime: Long = 0
-    private val processedAddresses = mutableSetOf<String>()
+    // Deduplication is scoped to each batch, never across callbacks: the same
+    // rotating address must remain eligible for later status updates.
 
     private val lastValidCaseBatteryMap = mutableMapOf<String, Int>()
     private val modelNames = mapOf(
@@ -175,8 +176,8 @@ class BLEManager(private val context: Context) {
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
-                    processedAddresses.clear()
-                    for (result in results) {
+                    // Only use the newest advertisement for each address in this batch.
+                    for (result in results.associateBy { it.device.address }.values) {
                         processScanResult(result)
                     }
                 }
@@ -189,6 +190,8 @@ class BLEManager(private val context: Context) {
             mBluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, mScanCallback)
             Log.d(TAG, "BLE scanner started successfully")
 
+            // Reconfiguration must not accumulate multiple periodic cleanup loops.
+            cleanupHandler.removeCallbacks(cleanupRunnable)
             cleanupHandler.postDelayed(cleanupRunnable, CLEANUP_INTERVAL_MS)
         } catch (t: Throwable) {
             Log.e(TAG, "Error starting BLE scanner", t)
@@ -204,9 +207,10 @@ class BLEManager(private val context: Context) {
                 mScanCallback = null
             }
 
-            cleanupHandler.removeCallbacks(cleanupRunnable)
         } catch (t: Throwable) {
             Log.e(TAG, "Error stopping BLE scanner", t)
+        } finally {
+            cleanupHandler.removeCallbacks(cleanupRunnable)
         }
     }
 
@@ -254,10 +258,6 @@ class BLEManager(private val context: Context) {
             val scanRecord = result.scanRecord ?: return
             val address = result.device.address
 
-            if (processedAddresses.contains(address)) {
-                return
-            }
-
             val manufacturerData = scanRecord.getManufacturerSpecificData(76) ?: return
             if (manufacturerData.size <= 20) return
 
@@ -270,7 +270,6 @@ class BLEManager(private val context: Context) {
                 Log.d(TAG, "RPA verified and added to trusted list: $address")
             }
 
-            processedAddresses.add(address)
             lastBroadcastTime = System.currentTimeMillis()
 
             val encryptionKey = getEncryptionKeyFromPreferences()
@@ -295,7 +294,11 @@ class BLEManager(private val context: Context) {
                         Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"} (detected from new device)")
                     }
                 } else {
-                    if (parsedStatus != previousStatus) {
+                    // lastSeen is only a timestamp, not a changed device state.
+                    // Preserve repeated Disconnected notifications: the service relies
+                    // on them to retry AACP if its previous connection attempt failed.
+                    val stateChanged = parsedStatus.copy(lastSeen = previousStatus.lastSeen) != previousStatus
+                    if (stateChanged || parsedStatus.connectionState == "Disconnected") {
                         listener.onDeviceStatusChanged(parsedStatus, previousStatus)
                     }
 

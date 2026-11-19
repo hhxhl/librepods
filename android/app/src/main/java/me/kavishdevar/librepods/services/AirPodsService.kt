@@ -130,6 +130,7 @@ import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_LOW_BATTERY_THRESHOLD
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
@@ -160,6 +161,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
+    // BLE, media and broadcast callbacks can all request a control connection.
+    // Allow only one BluetoothSocket.connect() attempt at a time.
+    private val aacpConnectInProgress = AtomicBoolean(false)
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -2630,7 +2634,24 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
     ) {
-        if (BluetoothConnectionManager.aacpSocket != null && BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+        if (!aacpConnectInProgress.compareAndSet(false, true)) {
+            Log.d(TAG, "AACP connection already in progress; skipping duplicate request")
+            return
+        }
+        try {
+            connectToSocketInternal(adapter, device, manual)
+        } finally {
+            aacpConnectInProgress.set(false)
+        }
+    }
+
+    @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
+    private fun connectToSocketInternal(
+        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean
+    ) {
+        // Recheck after obtaining the guard: another caller may have connected.
+        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
         Log.d(TAG, "<LogCollector:Start> Connecting to socket")
         val uuid: ParcelUuid = ParcelUuid.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
 //        if (!isConnectedLocally) {
@@ -2731,6 +2752,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         } else {
                             showSocketConnectionFailureNotification("Couldn't connect to socket: ${e.localizedMessage}")
                         }
+                        try { socket.close() } catch (closeError: Exception) {
+                            Log.w(TAG, "Failed to close unsuccessful AACP socket", closeError)
+                        }
+                        if (BluetoothConnectionManager.aacpSocket === socket) {
+                            BluetoothConnectionManager.aacpSocket = null
+                        }
                         return@withTimeout
 //                            throw e // lol how did i not catch this before... gonna comment this line instead of removing to preserve history
                     }
@@ -2744,6 +2771,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     )
                 } else {
                     showSocketConnectionFailureNotification("Couldn't connect to socket: Timeout")
+                }
+                try { socket.close() } catch (closeError: Exception) {
+                    Log.w(TAG, "Failed to close timed-out AACP socket", closeError)
+                }
+                if (BluetoothConnectionManager.aacpSocket === socket) {
+                    BluetoothConnectionManager.aacpSocket = null
                 }
                 return
             }
