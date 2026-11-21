@@ -161,6 +161,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
+
+    // Only protect a verified remote MEDIA source; unknown state is not proof.
+    fun isOtherDevicePlayingMedia(): Boolean {
+        val source = aacpManager.audioSource ?: return false
+        return source.type == AACPManager.Companion.AudioSourceType.MEDIA &&
+            localMac.matches(Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")) &&
+            !source.mac.equals(localMac, ignoreCase = true)
+    }
+
     // BLE, media and broadcast callbacks can all request a control connection.
     // Allow only one BluetoothSocket.connect() attempt at a time.
     private val aacpConnectInProgress = AtomicBoolean(false)
@@ -2453,6 +2462,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false
     ) {
+        if (takingOverFor != "reverse" && !manualTakeOverAfterReversed && isOtherDevicePlayingMedia()) {
+            Log.d(TAG, "Remote media protection: ignoring automatic takeover ($takingOverFor)")
+            if (takingOverFor == "music") MediaController.sendPause(force = true)
+            return
+        }
         if (takingOverFor == "reverse") {
             aacpManager.sendControlCommand(
                 AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1

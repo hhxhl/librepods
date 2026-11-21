@@ -104,6 +104,14 @@ object MediaController {
             val isActive = audioManager.isMusicActive
             Log.d("MediaController", "Playback config changed, iPausedTheMedia: $iPausedTheMedia, isActive: $isActive, pausedForOtherDevice: $pausedForOtherDevice, lastKnownIsMusicActive: $lastKnownIsMusicActive")
 
+            // Pause Pixel before announcing its playback to AirPods or requesting takeover.
+            if (isActive && ServiceManager.getService()?.isOtherDevicePlayingMedia() == true) {
+                Log.d("MediaController", "Remote media protection: pausing Pixel playback")
+                sendPause(force = true)
+                lastKnownIsMusicActive = false
+                return
+            }
+
             if (!isActive && lastPlayWithReplay && now - lastPlayTime < 2500L) {
                 Log.d("MediaController", "Music paused shortly after play with replay; retrying play")
                 lastPlayWithReplay = false
