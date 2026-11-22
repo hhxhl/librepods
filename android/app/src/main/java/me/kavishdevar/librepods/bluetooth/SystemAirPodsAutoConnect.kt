@@ -42,6 +42,10 @@ object SystemAirPodsAutoConnect {
     private const val SETTINGS = "settings"
     private const val COOLDOWN_MS = 30_000L
     private const val CONNECTION_TIMEOUT_MS = 8_000L
+    private const val REGISTRATION_COOLDOWN_MS = 15_000L
+    private const val TRACE_INTERVAL_MS = 5_000L
+    private var lastSuccessfulRegistrationMs = 0L
+    private var lastScanTraceMs = 0L
 
     private fun scanIntent(context: Context): PendingIntent {
         val intent = Intent(context, SystemAirPodsScanReceiver::class.java).apply {
@@ -54,7 +58,16 @@ object SystemAirPodsAutoConnect {
     }
 
     @SuppressLint("MissingPermission")
-    fun register(context: Context) {
+    fun register(context: Context, force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        // Starting scans repeatedly can reset match tracking and miss a brief open-case event.
+        if (!force && lastSuccessfulRegistrationMs > 0L &&
+            now >= lastSuccessfulRegistrationMs &&
+            now - lastSuccessfulRegistrationMs < REGISTRATION_COOLDOWN_MS
+        ) {
+            Log.d(TAG, "System scan already registered recently; keeping existing scan")
+            return
+        }
         if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -73,23 +86,19 @@ object SystemAirPodsAutoConnect {
             if (!adapter.isEnabled) return
             val scanner: BluetoothLeScanner = adapter.bluetoothLeScanner ?: return
 
-            // Apple manufacturer data: 07 19 ... ; payload byte 8, bit 3 == 0 when lid open.
-            // Restricting at the controller level avoids waking the app for closed cases.
-            val bytes = ByteArray(27)
-            val mask = ByteArray(27)
-            bytes[0] = 7
-            bytes[1] = 25
-            mask[0] = 0xff.toByte()
-            mask[1] = 0xff.toByte()
-            mask[8] = 0x08
+            // Match only the stable AirPods advertising prefix in the controller.
+            // Do not use FIRST_MATCH: the same device may remain nearby across
+            // case-close/open events and FIRST_MATCH need not fire again.
+            // Lid/identity/audio checks are performed in the receiver.
+            val bytes = byteArrayOf(0x07, 0x19)
+            val mask = byteArrayOf(0xff.toByte(), 0xff.toByte())
             val filter = ScanFilter.Builder()
                 .setManufacturerData(0x004c, bytes, mask)
                 .build()
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-                .setCallbackType(ScanSettings.CALLBACK_TYPE_FIRST_MATCH)
-                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
-                .setNumOfMatches(ScanSettings.MATCH_NUM_ONE_ADVERTISEMENT)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setReportDelay(1_500L)
                 .build()
 
             // Refresh registrations after Bluetooth restarts / APK updates; the scan
@@ -97,6 +106,7 @@ object SystemAirPodsAutoConnect {
             scanner.stopScan(scanIntent(context))
             val result = scanner.startScan(listOf(filter), settings, scanIntent(context))
             Log.i(TAG, "System-managed BLE scan registration result=$result")
+            if (result == 0) lastSuccessfulRegistrationMs = SystemClock.elapsedRealtime()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register system BLE scan", e)
         }
@@ -139,23 +149,41 @@ object SystemAirPodsAutoConnect {
         ).orEmpty()
         val irk = readIrk(context)
         if (irk == null) {
+            Log.w(TAG, "System scan callback received but the saved AirPods IRK is unavailable")
             finish()
             return
         }
-        val allowed = results.any { result ->
+
+        // Count each rejection stage without logging BLE addresses or key material.
+        var validPayloads = 0
+        var identityMatches = 0
+        var openMatches = 0
+        var idleMatches = 0
+        for (result in results) {
             try {
                 val data = result.scanRecord?.getManufacturerSpecificData(0x004c)
-                if (data == null || data.size <= 10) return@any false
-                val knownAirPods = BluetoothCryptography.verifyRPA(result.device.address, irk)
-                val lidOpen = (data[8].toInt() and 0x08) == 0
-                // 0x00 disconnected; 0x04 idle. Avoid disturbing iPhone media/calls.
-                val noActiveAudio = (data[10].toInt() and 0xff) in setOf(0x00, 0x04)
-                knownAirPods && lidOpen && noActiveAudio
-            } catch (_: Exception) {
-                false
+                if (data == null || data.size <= 10) continue
+                validPayloads++
+                if (!BluetoothCryptography.verifyRPA(result.device.address, irk)) continue
+                identityMatches++
+                if ((data[8].toInt() and 0x08) != 0) continue
+                openMatches++
+                // 0x00 disconnected; 0x04 idle. Never auto-join active iPhone media/calls.
+                if ((data[10].toInt() and 0xff) !in setOf(0x00, 0x04)) continue
+                idleMatches++
+                break
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to parse a system BLE scan result", e)
             }
         }
-        if (!allowed) {
+
+        val now = SystemClock.elapsedRealtime()
+        if (idleMatches > 0 || lastScanTraceMs == 0L || now - lastScanTraceMs >= TRACE_INTERVAL_MS) {
+            lastScanTraceMs = now
+            Log.i(TAG, "System scan callback: results=${results.size}, valid=$validPayloads, " +
+                "trusted=$identityMatches, open=$openMatches, idle=$idleMatches")
+        }
+        if (idleMatches == 0) {
             finish()
             return
         }
@@ -193,6 +221,7 @@ object SystemAirPodsAutoConnect {
         val now = SystemClock.elapsedRealtime()
         val last = prefs.getLong("system_scan_last_connect_elapsed", 0)
         if (last > 0 && now >= last && now - last < COOLDOWN_MS) {
+            Log.d(TAG, "A2DP reconnect suppressed by cooldown")
             finish()
             return
         }
@@ -214,6 +243,7 @@ object SystemAirPodsAutoConnect {
                         // The receiver has a bounded lifetime. Never initiate an
                         // audio connection after the async broadcast already finished.
                         if (finished) return
+                        Log.i(TAG, "A2DP profile proxy obtained, profile=$profile")
                         if (profile == BluetoothProfile.A2DP &&
                             proxy.connectedDevices.none { it.address.equals(device.address, ignoreCase = true) }
                         ) {
@@ -228,6 +258,8 @@ object SystemAirPodsAutoConnect {
                             val method = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
                             val success = method.invoke(proxy, device)
                             Log.i(TAG, "Requested A2DP reconnect; result=$success")
+                        } else if (profile == BluetoothProfile.A2DP) {
+                            Log.d(TAG, "A2DP already connected; no reconnect necessary")
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "A2DP reconnect request failed", e)
@@ -238,6 +270,7 @@ object SystemAirPodsAutoConnect {
                 }
                 override fun onServiceDisconnected(profile: Int) { complete() }
             }, BluetoothProfile.A2DP)
+            Log.i(TAG, "A2DP profile proxy request accepted=$requested")
             if (!requested) complete()
         } catch (e: Exception) {
             Log.e(TAG, "Unable to obtain A2DP profile", e)
