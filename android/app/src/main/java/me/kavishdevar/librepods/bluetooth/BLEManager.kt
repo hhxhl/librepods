@@ -57,6 +57,7 @@ class BLEManager(private val context: Context) {
         val isRightCharging: Boolean = false,
         val isCaseCharging: Boolean = false,
         val lidOpen: Boolean = false,
+        val lidStateKnown: Boolean = false,
         val color: String = "Unknown",
         val connectionState: String = "Unknown"
     )
@@ -81,10 +82,10 @@ class BLEManager(private val context: Context) {
     private val verifiedAddresses = mutableSetOf<String>()
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var currentGlobalLidState: Boolean? = null
-    private var lastBroadcastTime: Long = 0
-    private val processedAddresses = mutableSetOf<String>()
-
-    private val lastValidCaseBatteryMap = mutableMapOf<String, Int>()
+    // BLE addresses rotate. Keep battery fallback across address changes in this service.
+    private var lastValidLeftBattery: Int? = null
+    private var lastValidRightBattery: Int? = null
+    private var lastValidCaseBattery: Int? = null
     private val modelNames = mapOf(
         0x0E20 to "AirPods Pro",
         0x1420 to "AirPods Pro 2",
@@ -114,7 +115,6 @@ class BLEManager(private val context: Context) {
     private val cleanupRunnable = object : Runnable {
         override fun run() {
             cleanupStaleDevices()
-            checkLidStateTimeout()
             cleanupHandler.postDelayed(this, CLEANUP_INTERVAL_MS)
         }
     }
@@ -175,8 +175,9 @@ class BLEManager(private val context: Context) {
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
-                    processedAddresses.clear()
-                    for (result in results) {
+                    // Process every advertisement, including repeated addresses, in timestamp
+                    // order. The previous address-only de-duplication discarded real state changes.
+                    for (result in results.sortedBy { it.timestampNanos }) {
                         processScanResult(result)
                     }
                 }
@@ -254,10 +255,6 @@ class BLEManager(private val context: Context) {
             val scanRecord = result.scanRecord ?: return
             val address = result.device.address
 
-            if (processedAddresses.contains(address)) {
-                return
-            }
-
             val manufacturerData = scanRecord.getManufacturerSpecificData(76) ?: return
             if (manufacturerData.size <= 20) return
 
@@ -270,16 +267,23 @@ class BLEManager(private val context: Context) {
                 Log.d(TAG, "RPA verified and added to trusted list: $address")
             }
 
-            processedAddresses.add(address)
-            lastBroadcastTime = System.currentTimeMillis()
 
             val encryptionKey = getEncryptionKeyFromPreferences()
             val decryptedData = if (encryptionKey != null) decryptLastBytes(manufacturerData, encryptionKey) else null
-            val parsedStatus = if (decryptedData != null && decryptedData.size == 16) {
+            val rawStatus = if (decryptedData != null && decryptedData.size == 16) {
                 parseProximityMessageWithDecryption(address, manufacturerData, decryptedData)
             } else {
                 parseProximityMessage(address, manufacturerData)
             }
+            // Unknown fields must not erase valid readings from another RPA address.
+            val parsedStatus = rawStatus.copy(
+                leftBattery = rawStatus.leftBattery ?: lastValidLeftBattery,
+                rightBattery = rawStatus.rightBattery ?: lastValidRightBattery,
+                caseBattery = rawStatus.caseBattery ?: lastValidCaseBattery
+            )
+            rawStatus.leftBattery?.let { lastValidLeftBattery = it }
+            rawStatus.rightBattery?.let { lastValidRightBattery = it }
+            rawStatus.caseBattery?.let { lastValidCaseBattery = it }
 
             val previousStatus = deviceStatusMap[address]
             deviceStatusMap[address] = parsedStatus
@@ -288,26 +292,29 @@ class BLEManager(private val context: Context) {
                 if (previousStatus == null) {
                     listener.onBroadcastFromNewAddress(parsedStatus)
                     Log.d(TAG, "New AirPods device detected: $address")
+                    // First advertisement may provide valid battery fields, but does
+                    // not establish a new lid-opening event.
+                    if (parsedStatus.leftBattery != null || parsedStatus.rightBattery != null ||
+                        parsedStatus.caseBattery != null) {
+                        listener.onBatteryChanged(parsedStatus)
+                    }
+                } else if (parsedStatus.copy(lastSeen = previousStatus.lastSeen) != previousStatus) {
+                    listener.onDeviceStatusChanged(parsedStatus, previousStatus)
+                }
 
-                    if (currentGlobalLidState == null || currentGlobalLidState != parsedStatus.lidOpen) {
-                        currentGlobalLidState = parsedStatus.lidOpen
+                // A first trusted BLE address is not proof of a lid opening. In
+                // particular, recreating AirPodsService makes the same RPA look new.
+                // Only announce a verified transition from closed to open. 0x00
+                // and broadcasts from a bud outside the case do not establish lid state.
+                if (parsedStatus.lidStateKnown) {
+                    val oldGlobal = currentGlobalLidState
+                    currentGlobalLidState = parsedStatus.lidOpen
+                    if (oldGlobal != null && oldGlobal != parsedStatus.lidOpen) {
                         listener.onLidStateChanged(parsedStatus.lidOpen)
-                        Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"} (detected from new device)")
+                        Log.d(TAG, "Verified lid transition: $oldGlobal -> ${parsedStatus.lidOpen}")
                     }
-                } else {
-                    if (parsedStatus != previousStatus) {
-                        listener.onDeviceStatusChanged(parsedStatus, previousStatus)
-                    }
-
-                    if (parsedStatus.lidOpen != previousStatus.lidOpen) {
-                        val previousGlobalState = currentGlobalLidState
-                        currentGlobalLidState = parsedStatus.lidOpen
-
-                        if (previousGlobalState != parsedStatus.lidOpen) {
-                            listener.onLidStateChanged(parsedStatus.lidOpen)
-                            Log.d(TAG, "Lid state changed from $previousGlobalState to ${parsedStatus.lidOpen}")
-                        }
-                    }
+                }
+                if (previousStatus != null) {
 
                     if (parsedStatus.isLeftInEar != previousStatus.isLeftInEar ||
                         parsedStatus.isRightInEar != previousStatus.isRightInEar) {
@@ -355,19 +362,17 @@ class BLEManager(private val context: Context) {
         val leftByteIndex = if (isFlipped) 2 else 1
         val rightByteIndex = if (isFlipped) 1 else 2
 
-        val (isLeftCharging, leftBattery) = formatBattery(decrypted[leftByteIndex].toInt() and 0xFF)
-        val (isRightCharging, rightBattery) = formatBattery(decrypted[rightByteIndex].toInt() and 0xFF)
+        val (isLeftCharging, decryptedLeft) = formatBattery(decrypted[leftByteIndex].toInt() and 0xFF)
+        val (isRightCharging, decryptedRight) = formatBattery(decrypted[rightByteIndex].toInt() and 0xFF)
+        val (isCaseCharging, decryptedCase) = formatBattery(decrypted[3].toInt() and 0xFF)
+        val publicStatus = parseProximityMessage(address, data)
+        val leftBattery = decryptedLeft.takeIf { it in 0..100 } ?: publicStatus.leftBattery
+        val rightBattery = decryptedRight.takeIf { it in 0..100 } ?: publicStatus.rightBattery
+        val caseBattery = if (thisInCase) {
+            decryptedCase.takeIf { it in 0..100 } ?: publicStatus.caseBattery
+        } else null
 
-        val rawCaseBatteryByte = decrypted[3].toInt() and 0xFF
-        val (isCaseCharging, rawCaseBattery) = formatBattery(rawCaseBatteryByte)
-
-        val caseBattery = if (rawCaseBatteryByte == 0xFF || (isCaseCharging && rawCaseBattery == 127)) {
-            lastValidCaseBatteryMap[address]
-        } else {
-            lastValidCaseBatteryMap[address] = rawCaseBattery
-            rawCaseBattery
-        }
-
+        val lidKnown = lid != 0 && thisInCase
         val lidOpen = ((lid shr 3) and 0x01) == 0
 
         return AirPodsStatus(
@@ -384,6 +389,7 @@ class BLEManager(private val context: Context) {
             isRightCharging = isRightCharging,
             isCaseCharging = isCaseCharging,
             lidOpen = lidOpen,
+            lidStateKnown = lidKnown,
             color = color,
             connectionState = conn
         )
@@ -403,15 +409,6 @@ class BLEManager(private val context: Context) {
 
         if (hadDevices && deviceStatusMap.isEmpty()) {
             airPodsStatusListener?.onDeviceDisappeared()
-        }
-    }
-
-    private fun checkLidStateTimeout() {
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastBroadcastTime > LID_CLOSE_TIMEOUT_MS && currentGlobalLidState == true) {
-            Log.d(TAG, "No broadcasts for ${LID_CLOSE_TIMEOUT_MS}ms, forcing lid state to closed")
-            currentGlobalLidState = false
-            airPodsStatusListener?.onLidStateChanged(false)
         }
     }
 
@@ -461,6 +458,7 @@ class BLEManager(private val context: Context) {
         val isRightCharging = if (isFlipped) (flags and 0x01) != 0 else (flags and 0x02) != 0
         val isCaseCharging = (flags and 0x04) != 0
 
+        val lidKnown = lid != 0 && thisInCase
         val lidOpen = ((lid shr 3) and 0x01) == 0
 
         fun decodeBattery(n: Int): Int? = when (n) {
@@ -477,13 +475,14 @@ class BLEManager(private val context: Context) {
             model = model,
             leftBattery = decodeBattery(leftBatteryNibble),
             rightBattery = decodeBattery(rightBatteryNibble),
-            caseBattery = decodeBattery(caseBattery),
+            caseBattery = if (thisInCase) decodeBattery(caseBattery) else null,
             isLeftInEar = isLeftInEar,
             isRightInEar = isRightInEar,
             isLeftCharging = isLeftCharging,
             isRightCharging = isRightCharging,
             isCaseCharging = isCaseCharging,
             lidOpen = lidOpen,
+            lidStateKnown = lidKnown,
             color = color,
             connectionState = conn
         )
@@ -493,6 +492,5 @@ class BLEManager(private val context: Context) {
         private const val TAG = "AirPodsBLE"
         private const val CLEANUP_INTERVAL_MS = 10000L
         private const val STALE_DEVICE_TIMEOUT_MS = 15000L
-        private const val LID_CLOSE_TIMEOUT_MS = 2500L
     }
 }

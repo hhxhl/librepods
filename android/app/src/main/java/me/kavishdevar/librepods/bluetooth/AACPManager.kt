@@ -285,6 +285,10 @@ class AACPManager {
         this.callback = callback
     }
 
+    fun clearPacketCallback() {
+        callback = null
+    }
+
     fun createDataPacket(data: ByteArray): ByteArray {
         return HEADER_BYTES + data
     }

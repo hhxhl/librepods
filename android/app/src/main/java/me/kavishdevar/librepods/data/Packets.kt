@@ -154,68 +154,88 @@ class AirPodsNotifications {
     }
 
     class BatteryNotification {
+        companion object {
+            // A service can be destroyed and immediately recreated when the UI is reopened.
+            // Retain valid readings for this app process instead of showing initial 0% again.
+            val sharedInstance = BatteryNotification()
+        }
+
         private var first: Battery = Battery(BatteryComponent.LEFT, 0, BatteryStatus.DISCONNECTED)
         private var second: Battery = Battery(BatteryComponent.RIGHT, 0, BatteryStatus.DISCONNECTED)
         private var case: Battery = Battery(BatteryComponent.CASE, 0, BatteryStatus.DISCONNECTED)
 
         fun isBatteryData(data: ByteArray): Boolean {
-            if (data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")) {
-                Log.d("BatteryNotification", "Battery data starts with 040004000400. Most likely is a battery packet.")
-            } else {
-                return false
-            }
-            if (data.size != 22) {
-                Log.d("BatteryNotification", "Battery data size is not 22, probably being used with Airpods with fewer or more battery count.")
-                return false
-            }
-            Log.d("BatteryNotification", data.joinToString("") { "%02x".format(it) }.startsWith("040004000400").toString())
-            return data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")
+            // Header (6 bytes), component count (1 byte), then 5 bytes per component.
+            // Some firmware sends fewer/more than three components.
+            val prefix = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x04, 0x00)
+            return data.size >= 12 && (data.size - 7) % 5 == 0 &&
+                data.copyOfRange(0, 6).contentEquals(prefix)
         }
 
+        /**
+         * BLE reports are partial. A missing component is unknown, not 0%.
+         * Preserve prior valid AACP levels when an unreliable BLE field disappears.
+         */
+        @Synchronized
         fun setBatteryDirect(
-            leftLevel: Int,
-            leftCharging: Boolean,
-            rightLevel: Int,
-            rightCharging: Boolean,
-            caseLevel: Int,
-            caseCharging: Boolean
+            leftLevel: Int?,
+            leftCharging: Boolean?,
+            rightLevel: Int?,
+            rightCharging: Boolean?,
+            caseLevel: Int?,
+            caseCharging: Boolean?
         ) {
-            first = Battery(BatteryComponent.LEFT, leftLevel, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            second = Battery(BatteryComponent.RIGHT, rightLevel, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            case = Battery(BatteryComponent.CASE, caseLevel, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            first = mergeBleBattery(first, leftLevel, leftCharging)
+            second = mergeBleBattery(second, rightLevel, rightCharging)
+            case = mergeBleBattery(case, caseLevel, caseCharging)
         }
 
+        private fun mergeBleBattery(previous: Battery, level: Int?, charging: Boolean?): Battery {
+            if (level == null || level !in 0..100) return previous
+            // Public BLE levels are coarse. A zero without charging evidence may be
+            // an unavailable field; do not erase an established nonzero AACP value.
+            if (level == 0 && charging != true && previous.level > 0) return previous
+            return Battery(
+                previous.component, level,
+                if (charging == true) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING
+            )
+        }
+
+        /** Merge valid component records; disconnected 0% and FF are unknown. */
+        @Synchronized
         fun setBattery(data: ByteArray) {
-            if (data.size != 22) {
+            if (!isBatteryData(data)) {
+                Log.d("BatteryNotification", "Ignoring invalid battery packet, size=${data.size}")
                 return
             }
-//            first = if (data[10].toInt() == BatteryStatus.DISCONNECTED) {
-//                Battery(first.component, first.level, data[10].toInt())
-//            } else {
-//                Battery(data[7].toInt(), data[9].toInt(), data[10].toInt())
-//            }
-//            second = if (data[15].toInt() == BatteryStatus.DISCONNECTED) {
-//                Battery(second.component, second.level, data[15].toInt())
-//            } else {
-//                Battery(data[12].toInt(), data[14].toInt(), data[15].toInt())
-//            }
-//            case = if (data[20].toInt() == BatteryStatus.DISCONNECTED && case.status != BatteryStatus.DISCONNECTED) {
-//                Battery(case.component, case.level, data[20].toInt())
-//            } else {
-//                Battery(data[17].toInt(), data[19].toInt(), data[20].toInt())
-//            }
-//            sometimes it shows battery as -1%, just skip all that and set it normally
-            first = Battery(
-                data[7].toInt(), data[9].toInt(), data[10].toInt()
-            )
-            second = Battery(
-                data[12].toInt(), data[14].toInt(), data[15].toInt()
-            )
-            case = Battery(
-                data[17].toInt(), data[19].toInt(), data[20].toInt()
-            )
+            val available = (data.size - 7) / 5
+            val claimed = data[6].toInt() and 0xFF
+            if (claimed != available) {
+                Log.d("BatteryNotification", "Battery component count $claimed differs from payload count $available")
+            }
+            for (index in 0 until available) {
+                val offset = 7 + index * 5
+                val component = data[offset].toInt() and 0xFF
+                val level = data[offset + 2].toInt() and 0xFF
+                val status = data[offset + 3].toInt() and 0xFF
+                if (component != BatteryComponent.LEFT && component != BatteryComponent.RIGHT &&
+                    component != BatteryComponent.CASE) continue
+                if (level !in 0..100 || status !in listOf(
+                        BatteryStatus.CHARGING, BatteryStatus.NOT_CHARGING,
+                        BatteryStatus.DISCONNECTED, BatteryStatus.OPTIMIZED_CHARGING
+                    ) || (level == 0 && status == BatteryStatus.DISCONNECTED)) {
+                    continue
+                }
+                val updated = Battery(component, level, status)
+                when (component) {
+                    BatteryComponent.LEFT -> first = updated
+                    BatteryComponent.RIGHT -> second = updated
+                    BatteryComponent.CASE -> case = updated
+                }
+            }
         }
 
+        @Synchronized
         fun getBattery(): List<Battery> {
             val left = if (first.component == BatteryComponent.LEFT) first else second
             val right = if (first.component == BatteryComponent.LEFT) second else first
