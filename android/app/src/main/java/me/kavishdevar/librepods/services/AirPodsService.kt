@@ -31,6 +31,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.appwidget.AppWidgetManager
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
@@ -111,6 +112,8 @@ import me.kavishdevar.librepods.presentation.widgets.NoiseControlWidget
 import me.kavishdevar.librepods.utils.GestureDetector
 import me.kavishdevar.librepods.utils.HeadTracking
 import me.kavishdevar.librepods.utils.MediaController
+import me.kavishdevar.librepods.utils.AudioSwitchTrace
+import me.kavishdevar.librepods.utils.LocalBluetoothAddressResolver
 import me.kavishdevar.librepods.utils.SystemApisUtils
 import me.kavishdevar.librepods.utils.SystemApisUtils.DEVICE_TYPE_UNTETHERED_HEADSET
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_COMPANION_APP
@@ -155,7 +158,7 @@ object ServiceManager {
 // @Suppress("unused")
 class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
     var macAddress = ""
-    var localMac = ""
+    @Volatile var localMac = ""
     lateinit var aacpManager: AACPManager
     lateinit var attManager: ATTManagerv2
     var airpodsInstance: AirPodsInstance? = null
@@ -351,6 +354,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    private fun updateLocalMac(candidate: String, source: String) {
+        val canonical = LocalBluetoothAddressResolver.canonical(candidate) ?: return
+        // Do not replace a valid address merely because a later asynchronous probe
+        // completed; the user may have intentionally configured it.
+        if (localMac.isNotEmpty() && localMac != canonical) {
+            AudioSwitchTrace.event("Identity", "conflict", "existing=$localMac candidate=$canonical source=$source")
+            return
+        }
+        if (localMac == canonical) return
+        localMac = canonical
+        config.selfMacAddress = canonical
+        sharedPreferences.edit { putString("self_mac_address", canonical) }
+        AudioSwitchTrace.event("Identity", "resolved", "source=$source local=$canonical")
+    }
+
     fun isBluetoothSocketExempted(): Boolean {
         return try {
             BluetoothSocket::class.java.declaredConstructors // will throw if still blocked
@@ -384,36 +402,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
 
-        localMac = config.selfMacAddress
-        if (localMac.isEmpty()) {
-            if (checkSelfPermission("android.permission.LOCAL_MAC_ADDRESS") == PackageManager.PERMISSION_GRANTED) {
-                val bluetoothManager = getSystemService(BluetoothManager::class.java)
-                val bluetoothAdapter = bluetoothManager.adapter
-                localMac = bluetoothAdapter.address
+        // A modern Android app can receive 02:00:00:00:00:00 instead of its real
+        // Bluetooth address. Never persist that sentinel or a failed shell result.
+        LocalBluetoothAddressResolver.canonical(config.selfMacAddress)?.let {
+            localMac = it
+            AudioSwitchTrace.event("Identity", "resolved", "source=saved local=$it")
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            val resolved = LocalBluetoothAddressResolver.resolve(
+                this@AirPodsService, config.selfMacAddress
+            )
+            if (resolved != null) {
+                updateLocalMac(resolved.address, resolved.source)
             } else {
-                localMac = try {
-                    val process = Runtime.getRuntime().exec(
-                        arrayOf("su", "-c", "settings get secure bluetooth_address")
-                    )
-
-                    val exitCode = process.waitFor()
-
-                    if (exitCode == 0) {
-                        process.inputStream.bufferedReader().use { it.readLine()?.trim().orEmpty() }
-                    } else {
-                        ""
-                    }
-                } catch (e: Exception) {
-                    Log.e(
-                        TAG,
-                        "Error retrieving local MAC address: ${e.message}. We probably aren't rooted."
-                    )
-                    ""
-                }
-            }
-            config.selfMacAddress = localMac
-            sharedPreferences.edit {
-                putString("self_mac_address", localMac)
+                AudioSwitchTrace.event("Identity", "unresolved", "local Bluetooth MAC unavailable; media detection remains enabled")
             }
         }
 
@@ -653,6 +655,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             addAction("android.bluetooth.adapter.action.CONNECTION_STATE_CHANGED")
             addAction("android.bluetooth.adapter.action.STATE_CHANGED")
             addAction("android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED")
+            addAction("android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED")
             addAction("android.bluetooth.headset.action.VENDOR_SPECIFIC_HEADSET_EVENT")
             addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
             addAction("android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED")
@@ -936,6 +939,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onOwnershipChangeReceived(owns: Boolean) {
+                AudioSwitchTrace.event("AACP", "ownership_callback", "owns=$owns source=${aacpManager.audioSource?.mac}/${aacpManager.audioSource?.type}")
                 if (!owns) {
                     MediaController.recentlyLostOwnership = true
                     Handler(Looper.getMainLooper()).postDelayed({
@@ -1116,6 +1120,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     "AirPodsParser",
                     "Audio source changed mac: ${aacpManager.audioSource?.mac}, type: ${aacpManager.audioSource?.type?.name}"
                 )
+                val source = aacpManager.audioSource
+                val direction = when {
+                    source == null || source.type == AACPManager.Companion.AudioSourceType.NONE -> "NONE"
+                    localMac.isEmpty() -> "UNKNOWN_LOCAL_MAC"
+                    source.mac.equals(localMac, ignoreCase = true) -> "PIXEL"
+                    else -> "OTHER_DEVICE"
+                }
+                AudioSwitchTrace.event("AACP", "source_classification", "direction=$direction source=${source?.mac}/${source?.type} localMacKnown=${localMac.isNotEmpty()}")
                 if (localMac!="" && (aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE && aacpManager.audioSource?.mac != localMac)) {
                     Log.d(
                         "AirPodsParser",
@@ -1133,6 +1145,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onConnectedDevicesReceived(connectedDevices: List<AACPManager.Companion.ConnectedDevice>) {
+                // Only infer the local identity when AACP uniquely identifies an
+                // Android phone among connected sources; never guess from list order.
+                if (localMac.isEmpty()) {
+                    connectedDevices.filter { it.type.equals("Android", ignoreCase = true) }
+                        .singleOrNull()?.let { updateLocalMac(it.mac, "aacp_android_device") }
+                }
                 for (device in connectedDevices) {
                     Log.d(
                         "AirPodsParser",
@@ -2390,6 +2408,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
             val action = intent.action
             val context = context?.applicationContext
+            val target = context?.getSharedPreferences("settings", MODE_PRIVATE)
+                ?.getString("mac_address", null)
+            if (!action.isNullOrEmpty() && bluetoothDevice != null &&
+                bluetoothDevice.address.equals(target, ignoreCase = true) &&
+                (action == BluetoothA2dp.ACTION_PLAYING_STATE_CHANGED ||
+                    action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED ||
+                    action == BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED ||
+                    action == BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
+            ) {
+                AudioSwitchTrace.event(
+                    "Bluetooth", "audio_state",
+                    "action=$action previous=${intent.getIntExtra(BluetoothProfile.EXTRA_PREVIOUS_STATE, -1)} " +
+                        "state=${intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)} target=${bluetoothDevice.address}"
+                )
+            }
             val name = context?.getSharedPreferences("settings", MODE_PRIVATE)
                 ?.getString("name", bluetoothDevice?.name)
             if (bluetoothDevice != null && !action.isNullOrEmpty()) {
@@ -2477,6 +2510,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false
     ) {
+        AudioSwitchTrace.event(
+            "Takeover", "requested",
+            "reason=$takingOverFor localMacKnown=${localMac.isNotEmpty()} socketConnected=${BluetoothConnectionManager.aacpSocket?.isConnected == true} " +
+                "owns=${aacpManager.owns} source=${aacpManager.audioSource?.mac}/${aacpManager.audioSource?.type} " +
+                "mediaEnabled=${config.takeoverWhenMediaStart} callEnabled=${config.takeoverWhenRingingCall}"
+        )
         if (takingOverFor == "reverse") {
             aacpManager.sendControlCommand(
                 AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
@@ -2515,6 +2554,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     }
                 }
 
+                AudioSwitchTrace.event("Takeover", "sending_hijack", "reason=$takingOverFor source=${aacpManager.audioSource?.mac}/${aacpManager.audioSource?.type}")
                 Log.d(TAG, "already connected locally, hijacking connection by asking AirPods")
                 aacpManager.sendControlCommand(
                     AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
@@ -2994,6 +3034,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun disconnectAudio(context: Context, device: BluetoothDevice?) {
+        AudioSwitchTrace.event("Bluetooth", "disconnect_audio_requested", "target=${device?.address}")
         val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java).adapter
         if (checkSelfPermission("android.permission.BLUETOOTH_PRIVILEGED") == PackageManager.PERMISSION_GRANTED) {
             bluetoothAdapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
@@ -3051,6 +3092,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun connectAudio(context: Context, device: BluetoothDevice?) {
+        AudioSwitchTrace.event("Bluetooth", "connect_audio_requested", "target=${device?.address}")
         val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java).adapter
 
         bluetoothAdapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {

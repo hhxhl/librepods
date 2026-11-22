@@ -21,6 +21,7 @@
 package me.kavishdevar.librepods.bluetooth
 
 import android.util.Log
+import me.kavishdevar.librepods.utils.AudioSwitchTrace
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
 import java.nio.ByteBuffer
@@ -215,16 +216,19 @@ class AACPManager {
         identifier: ControlCommandIdentifiers, value: ByteArray
     ) {
         val existingStatus = getControlCommandStatus(identifier)
-        if (existingStatus?.value.contentEquals(value)) {
-            controlCommandStatusList.remove(existingStatus)
-        }
+        // Keep one latest value per identifier, including when the value changes.
+        controlCommandStatusList.removeAll { it.identifier == identifier }
         controlCommandListeners[identifier]?.forEach { listener ->
             listener.onControlCommandReceived(ControlCommand(identifier.value, value))
         }
-        controlCommandStatusList.add(ControlCommandStatus(identifier, value))
+        controlCommandStatusList.add(ControlCommandStatus(identifier, value.copyOf()))
 
         if (identifier == ControlCommandIdentifiers.OWNS_CONNECTION) {
             owns = value.isNotEmpty() && value[0] == 0x01.toByte()
+            AudioSwitchTrace.event(
+                "AACP", "ownership_state",
+                "old=${existingStatus?.value?.firstOrNull()?.toInt()?.and(0xff)} new=${value.firstOrNull()?.toInt()?.and(0xff)} owns=$owns"
+            )
         }
     }
 
@@ -432,6 +436,9 @@ class AACPManager {
                     callback?.onUnknownPacketReceived(packet)
                     return
                 }
+                if (controlCommand.identifier == ControlCommandIdentifiers.OWNS_CONNECTION.value) {
+                    AudioSwitchTrace.event("AACP", "ownership_report", "value=${controlCommand.value.firstOrNull()?.toInt()?.and(0xff)}")
+                }
                 setControlCommandStatusValue(
                     ControlCommandIdentifiers.fromByte(controlCommand.identifier) ?: return,
                     controlCommand.value
@@ -511,7 +518,12 @@ class AACPManager {
             Opcodes.AUDIO_SOURCE -> {
                 try {
                     val (mac, type) = parseAudioSourceResponse(packet)
+                    val previous = audioSource
                     audioSource = AudioSource(mac, type)
+                    AudioSwitchTrace.event(
+                        "AACP", "audio_source",
+                        "old=${previous?.mac}/${previous?.type} new=$mac/$type"
+                    )
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing audio source response: ${e.message}")
                 }
@@ -521,6 +533,7 @@ class AACPManager {
             Opcodes.CONNECTED_DEVICES -> {
                 oldConnectedDevices = connectedDevices
                 connectedDevices = parseConnectedDevicesResponse(packet)
+                AudioSwitchTrace.event("AACP", "connected_devices", "count=${connectedDevices.size} devices=${connectedDevices.map { it.mac }}")
                 callback?.onConnectedDevicesReceived(connectedDevices)
             }
 
@@ -1152,6 +1165,9 @@ class AACPManager {
                     Log.w(TAG, "Invalid control command: ${e.message}")
                     callback?.onUnknownPacketReceived(packet)
                     return false
+                }
+                if (controlCommand.identifier == ControlCommandIdentifiers.OWNS_CONNECTION.value) {
+                    AudioSwitchTrace.event("AACP", "ownership_request", "value=${controlCommand.value.firstOrNull()?.toInt()?.and(0xff)}")
                 }
                 Log.d(
                     TAG, "Control command: ${controlCommand.identifier.toHexString()} - ${

@@ -22,6 +22,7 @@ package me.kavishdevar.librepods.utils
 
 import android.content.SharedPreferences
 import android.media.AudioManager
+import android.media.AudioAttributes
 import android.media.AudioPlaybackConfiguration
 import android.os.Build
 import android.os.Handler
@@ -126,26 +127,23 @@ object MediaController {
             }
 
             Log.d("MediaController", "Configs received: ${configs?.size ?: 0} configurations")
-            val currentActiveContentTypes = configs?.flatMap { config ->
-                Log.d("MediaController", "Processing config: ${config}, audioAttributes: ${config.audioAttributes}")
-                config.audioAttributes?.let { attrs ->
-                    val contentType = attrs.contentType
-                    Log.d("MediaController", "Config content type: $contentType")
-                    listOf(contentType)
-                } ?: run {
-                    Log.d("MediaController", "Config has no audioAttributes")
-                    emptyList()
-                }
-            }?.toSet() ?: emptySet()
-
-            Log.d("MediaController", "Current active content types: $currentActiveContentTypes")
-
-            val hasNewMusicOrMovie = currentActiveContentTypes.any { contentType ->
-                contentType == android.media.AudioAttributes.CONTENT_TYPE_MUSIC ||
-                contentType == android.media.AudioAttributes.CONTENT_TYPE_MOVIE
+            // The public callback exposes active playback configurations; hidden
+            // playerState / PLAYER_STATE_STARTED APIs are deliberately not used.
+            // Android apps may use USAGE_MEDIA with CONTENT_TYPE_UNKNOWN.
+            val activePlayback = configs.orEmpty()
+            val hasNewMusicOrMovie = activePlayback.any { playback ->
+                val attributes = playback.audioAttributes
+                attributes.usage == AudioAttributes.USAGE_MEDIA ||
+                    attributes.contentType == AudioAttributes.CONTENT_TYPE_MUSIC ||
+                    attributes.contentType == AudioAttributes.CONTENT_TYPE_MOVIE
             }
-
-            Log.d("MediaController", "Has new music or movie: $hasNewMusicOrMovie")
+            AudioSwitchTrace.event(
+                "Media", "playback_changed",
+                "isActive=$isActive started=${activePlayback.size} hasMedia=$hasNewMusicOrMovie " +
+                    "attributes=${activePlayback.map { "${it.audioAttributes.usage}/${it.audioAttributes.contentType}" }} " +
+                    "pausedForOther=$pausedForOtherDevice recentlyLost=$recentlyLostOwnership"
+            )
+            Log.d("MediaController", "Has active media playback: $hasNewMusicOrMovie")
 
             if (pausedForOtherDevice) {
                 handler.removeCallbacks(clearPausedForOtherDeviceRunnable)
@@ -157,6 +155,7 @@ object MediaController {
                         pausedForOtherDevice = false
                         userPlayedTheMedia = true
                         if (!pausedWhileTakingOver) {
+                            AudioSwitchTrace.event("Media", "takeover_trigger", "reason=resume_after_other_device")
                             ServiceManager.getService()?.takeOver("music")
                         }
                     } else {
@@ -171,12 +170,14 @@ object MediaController {
             }
 
             if (configs != null && !iPausedTheMedia) {
-                val localMac = ServiceManager.getService()?.localMac ?: return
-                if (localMac == "") return
-                ServiceManager.getService()?.aacpManager?.sendMediaInformataion(
-                    localMac,
-                    isActive
-                )
+                val service = ServiceManager.getService()
+                val localMac = service?.localMac.orEmpty()
+                if (LocalBluetoothAddressResolver.canonical(localMac) != null) {
+                    service?.aacpManager?.sendMediaInformataion(localMac, isActive)
+                } else {
+                    // Missing MAC must not disable the rest of playback handling.
+                    AudioSwitchTrace.event("Media", "skip_aacp_media_info", "reason=local_mac_unavailable")
+                }
                 Log.d("MediaController", "User changed media state themselves; will wait for ear detection pause before auto-play")
                 handler.postDelayed({
                     userPlayedTheMedia = audioManager.isMusicActive
@@ -191,6 +192,7 @@ object MediaController {
                 if (lastKnownIsMusicActive != true) {
                     if (!recentlyLostOwnership) {
                         Log.d("MediaController", "Music/movie is active and not pausedWhileTakingOver; requesting takeOver")
+                        AudioSwitchTrace.event("Media", "takeover_trigger", "reason=media_started")
                         ServiceManager.getService()?.takeOver("music")
                     } else {
                         Log.d("MediaController", "Skipping take-over due to recent ownership loss")
@@ -257,7 +259,9 @@ object MediaController {
     @Synchronized
     fun sendPause(force: Boolean = false) {
         Log.d("MediaController", "Sending pause with iPausedTheMedia: $iPausedTheMedia, userPlayedTheMedia: $userPlayedTheMedia, isMusicActive: ${audioManager.isMusicActive}, force: $force")
-        if ((audioManager.isMusicActive) && (!userPlayedTheMedia || force)) {
+        val willDispatch = audioManager.isMusicActive && (!userPlayedTheMedia || force)
+        AudioSwitchTrace.event("Media", "pause_decision", "force=$force willDispatch=$willDispatch isActive=${audioManager.isMusicActive} userPlayed=$userPlayedTheMedia")
+        if (willDispatch) {
             iPausedTheMedia = if (force) audioManager.isMusicActive else true
             userPlayedTheMedia = false
             audioManager.dispatchMediaKeyEvent(
@@ -283,6 +287,7 @@ object MediaController {
             lastPlayWithReplay = true
             lastPlayTime = SystemClock.uptimeMillis()
         }
+        AudioSwitchTrace.event("Media", "play_decision", "force=$force willDispatch=${iPausedTheMedia || force} replayWhenPaused=$replayWhenPaused")
         if (iPausedTheMedia || force) { // very creative, ik. thanks.
             Log.d("MediaController", "Sending play and setting userPlayedTheMedia to false")
             userPlayedTheMedia = false

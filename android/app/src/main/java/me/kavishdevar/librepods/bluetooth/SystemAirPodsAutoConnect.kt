@@ -30,6 +30,7 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import me.kavishdevar.librepods.services.AirPodsService
+import me.kavishdevar.librepods.utils.AudioSwitchTrace
 import me.kavishdevar.librepods.utils.BluetoothCryptography
 
 /**
@@ -354,6 +355,11 @@ class SystemAirPodsA2dpStateReceiver : BroadcastReceiver() {
         val device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             ?: return
         if (!device.address.equals(target, ignoreCase = true)) return
+        AudioSwitchTrace.event(
+            "Bluetooth", "profile_event",
+            "action=$action state=${intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)} " +
+                "previous=${intent.getIntExtra(BluetoothProfile.EXTRA_PREVIOUS_STATE, -1)} target=${device.address}"
+        )
 
         if (action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
             // A2DP may disconnect while a call still uses HFP. Only the physical
