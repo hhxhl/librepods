@@ -1088,6 +1088,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         putString(key.key.name, Base64.encode(key.value))
                     }
                 }
+                // Register controller-side scan after IRK becomes available.
+                me.kavishdevar.librepods.bluetooth.SystemAirPodsAutoConnect.register(this@AirPodsService)
             }
 
             override fun onStemPressReceived(stemPress: ByteArray) {
@@ -2442,7 +2444,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             takeOver("music", manualTakeOverAfterReversed = true)
         }
 
-        return START_STICKY
+        // UI-scoped service: do not restart it automatically after process death.
+        // The independent system-managed BLE scan handles background discovery.
+        return START_NOT_STICKY
     }
 
     @RequiresApi(Build.VERSION_CODES.R)

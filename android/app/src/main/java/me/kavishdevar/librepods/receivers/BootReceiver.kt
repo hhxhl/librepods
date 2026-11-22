@@ -24,23 +24,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import kotlin.io.encoding.ExperimentalEncodingApi
-import me.kavishdevar.librepods.services.AirPodsService
+import me.kavishdevar.librepods.bluetooth.SystemAirPodsAutoConnect
 
-class BootReceiver: BroadcastReceiver() {
+class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
+        val app = context?.applicationContext ?: return
         when (intent?.action) {
-            Intent.ACTION_MY_PACKAGE_REPLACED -> try { context?.startForegroundService(
-                Intent(
-                    context,
-                    AirPodsService::class.java
-                )
-            ) } catch (e: Exception) { e.printStackTrace() }
-            Intent.ACTION_BOOT_COMPLETED -> try { context?.startForegroundService(
-                Intent(
-                    context,
-                    AirPodsService::class.java
-                )
-            ) } catch (e: Exception) { e.printStackTrace() }
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_MY_PACKAGE_REPLACED -> SystemAirPodsAutoConnect.register(app)
+            android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                if (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1) ==
+                    android.bluetooth.BluetoothAdapter.STATE_ON
+                ) SystemAirPodsAutoConnect.register(app)
+            }
         }
     }
 }

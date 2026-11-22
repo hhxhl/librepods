@@ -46,6 +46,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.edit
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.android.play.core.review.ReviewManagerFactory
@@ -56,10 +59,10 @@ import me.kavishdevar.librepods.presentation.navigation.NavigationRoot
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 import me.kavishdevar.librepods.services.AirPodsService
+import me.kavishdevar.librepods.bluetooth.SystemAirPodsAutoConnect
 import me.kavishdevar.librepods.utils.XposedState
 import kotlin.io.encoding.ExperimentalEncodingApi
 
-lateinit var serviceConnection: ServiceConnection
 lateinit var connectionStatusReceiver: BroadcastReceiver
 lateinit var testReviewReceiver: BroadcastReceiver
 
@@ -78,6 +81,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Background discovery is registered with the Bluetooth stack, not this Activity.
+        SystemAirPodsAutoConnect.register(applicationContext)
 
         setContent {
             val sharedPreferences = LocalContext.current.getSharedPreferences("settings", MODE_PRIVATE)
@@ -110,12 +115,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         try {
-            unbindService(serviceConnection)
-            Log.d("MainActivity", "Unbound service")
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error while unbinding service: $e")
-        }
-        try {
             unregisterReceiver(connectionStatusReceiver)
             Log.d("MainActivity", "Unregistered receiver")
         } catch (e: Exception) {
@@ -126,12 +125,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        try {
-            unbindService(serviceConnection)
-            Log.d("MainActivity", "Unbound service")
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error while unbinding service: $e")
-        }
         try {
             unregisterReceiver(connectionStatusReceiver)
             Log.d("MainActivity", "Unregistered receiver")
@@ -179,17 +172,35 @@ fun Main() {
         }
     }
 
-    val onboardingComplete = sharedPreferences.getBoolean("onboarding_complete", false)
+    val onboardingComplete = remember {
+        mutableStateOf(sharedPreferences.getBoolean("onboarding_complete", false))
+    }
+    val boundConnection = remember { mutableStateOf<ServiceConnection?>(null) }
 
     val releaseNotesShownPrefKey = "release_notes_shown_${BuildConfig.VERSION_NAME.removeSuffix("-debug").removeSuffix("-play")}"
     val releaseNotesShown = sharedPreferences.getBoolean(releaseNotesShownPrefKey, false)
 
+    fun unbindUiService() {
+        val previous = boundConnection.value
+        boundConnection.value = null
+        if (previous != null) {
+            try {
+                context.unbindService(previous)
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Unable to unbind AirPods service", e)
+            }
+        }
+        // A bound service otherwise survives the Activity being hidden.
+        context.stopService(Intent(context, AirPodsService::class.java))
+        airPodsService.value = null
+    }
+
     fun bindService() {
-        context.startForegroundService(Intent(context, AirPodsService::class.java))
-        serviceConnection = object: ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                val binder = service as AirPodsService.LocalBinder
-                val service = binder.getService()
+        if (boundConnection.value != null) return
+        val serviceIntent = Intent(context, AirPodsService::class.java)
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                val service = (binder as? AirPodsService.LocalBinder)?.getService() ?: return
                 airPodsService.value = service
                 airPodsViewModel.init(
                     service = service,
@@ -197,7 +208,6 @@ fun Main() {
                     sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE),
                     appContext = context.applicationContext
                 )
-
                 if (!sharedPreferences.contains("first_connection_successful_time")) {
                     sharedPreferences.edit {
                         putLong("first_connection_successful_time", System.currentTimeMillis())
@@ -209,25 +219,49 @@ fun Main() {
                 airPodsService.value = null
             }
         }
-
-        context.bindService(
-            Intent(context, AirPodsService::class.java),
-            serviceConnection,
-            Context.BIND_AUTO_CREATE
-        )
+        try {
+            context.startForegroundService(serviceIntent)
+            if (context.bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
+                boundConnection.value = connection
+            } else {
+                Log.w("MainActivity", "Unable to bind AirPods service")
+                context.stopService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Unable to start AirPods service", e)
+            context.stopService(serviceIntent)
+        }
     }
 
-    if (onboardingComplete) {
-        bindService()
+    // The full AirPods service is only kept while the UI is visible.
+    // The independently registered BLE PendingIntent scan survives this lifecycle.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, onboardingComplete.value) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> if (onboardingComplete.value) bindService()
+                Lifecycle.Event.ON_STOP -> unbindUiService()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // Compose may install the observer AFTER ON_START has already fired.
+        if (onboardingComplete.value &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        ) bindService()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            unbindUiService()
+        }
     }
 
     NavigationRoot(
 //        showReleaseNotes = !releaseNotesShown,
 //        updatesShown = { sharedPreferences.edit { putBoolean(releaseNotesShownPrefKey, true) } },
-        showOnboarding = !onboardingComplete,
+        showOnboarding = !onboardingComplete.value,
         onboardingComplete = {
             sharedPreferences.edit { putBoolean("onboarding_complete", true) }
-            bindService()
+            onboardingComplete.value = true
         },
         airPodsViewModel = airPodsViewModel
     )
