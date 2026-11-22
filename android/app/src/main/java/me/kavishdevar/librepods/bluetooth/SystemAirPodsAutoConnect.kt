@@ -11,6 +11,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -40,6 +41,7 @@ object SystemAirPodsAutoConnect {
     private const val TAG = "AirPodsSystemScan"
     private const val ACTION_SCAN = "me.kavishdevar.librepods.SYSTEM_AIRPODS_SCAN"
     private const val SETTINGS = "settings"
+    private const val PAUSED_FOR_A2DP = "system_scan_paused_for_a2dp"
     private const val COOLDOWN_MS = 30_000L
     private const val CONNECTION_TIMEOUT_MS = 8_000L
     private const val REGISTRATION_COOLDOWN_MS = 15_000L
@@ -76,6 +78,13 @@ object SystemAirPodsAutoConnect {
         }
         val prefs = context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean("system_managed_auto_connect", true)) return
+        // Persist the pause across process deaths. A2DP's system broadcast clears
+        // it when the paired AirPods disconnect. Force registration is reserved
+        // for system startup / Bluetooth enabling / app replacement.
+        if (!force && prefs.getBoolean(PAUSED_FOR_A2DP, false)) {
+            Log.d(TAG, "System scan paused while AirPods A2DP is connected")
+            return
+        }
         if (prefs.getString("mac_address", null).isNullOrBlank() || readIrk(context) == null) {
             Log.i(TAG, "System scan pending: paired device address or AirPods IRK unavailable")
             return
@@ -106,7 +115,10 @@ object SystemAirPodsAutoConnect {
             scanner.stopScan(scanIntent(context))
             val result = scanner.startScan(listOf(filter), settings, scanIntent(context))
             Log.i(TAG, "System-managed BLE scan registration result=$result")
-            if (result == 0) lastSuccessfulRegistrationMs = SystemClock.elapsedRealtime()
+            if (result == 0) {
+                lastSuccessfulRegistrationMs = SystemClock.elapsedRealtime()
+                if (force) prefs.edit().putBoolean(PAUSED_FOR_A2DP, false).apply()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register system BLE scan", e)
         }
@@ -122,6 +134,27 @@ object SystemAirPodsAutoConnect {
         }
     }
 
+    /** Stop PendingIntent scan deliveries while the paired AirPods A2DP is connected. */
+    @SuppressLint("MissingPermission")
+    fun onAirPodsA2dpConnected(context: Context) {
+        val prefs = context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(PAUSED_FOR_A2DP, false)) return
+        prefs.edit().putBoolean(PAUSED_FOR_A2DP, true).apply()
+        unregister(context)
+        lastSuccessfulRegistrationMs = 0L
+        Log.i(TAG, "AirPods A2DP connected; system BLE scan stopped")
+    }
+
+    /** Resume discovery only when the paired AirPods A2DP profile disconnects. */
+    fun onAirPodsA2dpDisconnected(context: Context) {
+        val prefs = context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
+        // A previous connect request cooldown should not prevent a scan registration.
+        prefs.edit().putBoolean(PAUSED_FOR_A2DP, false).apply()
+        lastSuccessfulRegistrationMs = 0L
+        Log.i(TAG, "AirPods A2DP disconnected; resuming system BLE scan")
+        register(context, force = true)
+    }
+
     private fun readIrk(context: Context): ByteArray? {
         val encoded = context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
             .getString(AACPManager.Companion.ProximityKeyType.IRK.name, null) ?: return null
@@ -135,6 +168,12 @@ object SystemAirPodsAutoConnect {
     @SuppressLint("MissingPermission")
     fun handleScan(context: Context, intent: Intent, finish: () -> Unit) {
         if (intent.action != ACTION_SCAN) {
+            finish()
+            return
+        }
+        if (context.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
+                .getBoolean(PAUSED_FOR_A2DP, false)) {
+            // A few scan PendingIntents can be queued before stopScan completes.
             finish()
             return
         }
@@ -260,6 +299,9 @@ object SystemAirPodsAutoConnect {
                             Log.i(TAG, "Requested A2DP reconnect; result=$success")
                         } else if (profile == BluetoothProfile.A2DP) {
                             Log.d(TAG, "A2DP already connected; no reconnect necessary")
+                            // Catch connections which preceded scan registration or whose
+                            // connection broadcast was missed during process startup.
+                            onAirPodsA2dpConnected(context)
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "A2DP reconnect request failed", e)
@@ -291,6 +333,28 @@ class SystemAirPodsScanReceiver : BroadcastReceiver() {
                 Log.e("AirPodsSystemScan", "Scan receiver failed", e)
                 result.finish()
             }
+        }
+    }
+}
+
+/** Receives platform A2DP state events even if the LibrePods app process is absent. */
+class SystemAirPodsA2dpStateReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) return
+        if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED) return
+
+        val target = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("mac_address", null) ?: return
+        val device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            ?: return
+        if (!device.address.equals(target, ignoreCase = true)) return
+
+        when (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)) {
+            BluetoothProfile.STATE_CONNECTED ->
+                SystemAirPodsAutoConnect.onAirPodsA2dpConnected(context.applicationContext)
+            BluetoothProfile.STATE_DISCONNECTED ->
+                SystemAirPodsAutoConnect.onAirPodsA2dpDisconnected(context.applicationContext)
         }
     }
 }

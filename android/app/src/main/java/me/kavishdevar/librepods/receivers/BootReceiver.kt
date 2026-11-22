@@ -31,11 +31,11 @@ class BootReceiver : BroadcastReceiver() {
         val app = context?.applicationContext ?: return
         when (intent?.action) {
             Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED -> SystemAirPodsAutoConnect.register(app)
+            Intent.ACTION_MY_PACKAGE_REPLACED -> SystemAirPodsAutoConnect.register(app, force = true)
             android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED -> {
                 if (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1) ==
                     android.bluetooth.BluetoothAdapter.STATE_ON
-                ) SystemAirPodsAutoConnect.register(app)
+                ) SystemAirPodsAutoConnect.register(app, force = true)
             }
         }
     }

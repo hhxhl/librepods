@@ -136,6 +136,14 @@
         <receiver
             android:name=".bluetooth.SystemAirPodsScanReceiver"
             android:exported="false" />
+        <!-- Protected platform broadcast: delivered without a persistent app process. -->
+        <receiver
+            android:name=".bluetooth.SystemAirPodsA2dpStateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".receivers.BootReceiver"
             android:enabled="true"
