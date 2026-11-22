@@ -17,8 +17,6 @@
 */
 
 package me.kavishdevar.librepods.presentation.screens
-
-// import me.kavishdevar.librepods.utils.RadareOffsetFinder
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.foundation.background
@@ -256,7 +254,7 @@ fun AccessibilitySettingsScreen(viewModel: AirPodsViewModel, navigateToPurchase:
             enabled = state.isPremium
         )
 
-        if (state.capabilities.contains(Capability.LOUD_SOUND_REDUCTION) && state.vendorIdHook) {
+        if (state.capabilities.contains(Capability.LOUD_SOUND_REDUCTION) && state.attAdvancedFeaturesEnabled) {
             StyledToggle(
                 label = stringResource(R.string.loud_sound_reduction),
                 description = stringResource(R.string.loud_sound_reduction_description),
@@ -271,7 +269,7 @@ fun AccessibilitySettingsScreen(viewModel: AirPodsViewModel, navigateToPurchase:
             )
         }
 
-        if (!hearingAidEnabled && state.vendorIdHook) {
+        if (!hearingAidEnabled && state.attAdvancedFeaturesEnabled) {
             StyledListItem(
                 name = stringResource(R.string.customize_transparency_mode),
                 onClick = navigateToTransparencyCustomization,
@@ -346,8 +344,6 @@ fun AccessibilitySettingsScreen(viewModel: AirPodsViewModel, navigateToPurchase:
                 }
             }
         }
-
-//            if (!hearingAidEnabled && XposedState.isAvailable) {
 //                Text(
 //                    text = stringResource(R.string.apply_eq_to), style = TextStyle(
 //                        fontSize = 14.sp,

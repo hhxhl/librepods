@@ -95,7 +95,6 @@ import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.MaterialTypography
 import me.kavishdevar.librepods.presentation.viewmodel.AppSettingsViewModel
-import me.kavishdevar.librepods.utils.XposedState
 import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -290,6 +289,14 @@ fun AppSettingsScreen(
                 )
             }
 
+            StyledToggle(
+                label = stringResource(R.string.allow_aacp_takeover),
+                description = stringResource(R.string.allow_aacp_takeover_description),
+                checked = state.allowAacpTakeover,
+                onCheckedChange = viewModel::setAllowAacpTakeover,
+                enabled = state.isPremium
+            )
+
             StyledList(title = stringResource(R.string.takeover_airpods_state)) {
                 StyledToggle(
                     label = stringResource(R.string.takeover_disconnected),
@@ -366,29 +373,12 @@ fun AppSettingsScreen(
             }
         }
 
-        if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-            val restartBluetoothText = stringResource(R.string.found_offset_restart_bluetooth)
-            StyledToggle(
-                label = stringResource(R.string.act_as_an_apple_device) + " (${
-                    stringResource(
-                        R.string.requires_xposed
-                    )
-                })",
-                description = stringResource(R.string.act_as_an_apple_device_description),
-                checked = state.vendorIdHook,
-                onCheckedChange = { enabled ->
-                    Toast.makeText(context, restartBluetoothText, Toast.LENGTH_SHORT).show()
-                    viewModel.setVendorIdHook(enabled)
-                }
-            )
-            StyledToggle(
-                label = stringResource(R.string.enable_att_connection),
-                description = stringResource(R.string.enable_att_connection_description),
-                checked = state.enableAttConnection,
-                enabled = state.vendorIdHook,
-                onCheckedChange = viewModel::setEnableAttConnection
-            )
-        }
+        StyledToggle(
+            label = stringResource(R.string.enable_att_connection),
+            description = stringResource(R.string.enable_att_connection_description),
+            checked = state.enableAttConnection,
+            onCheckedChange = viewModel::setEnableAttConnection
+        )
 
         if (!BuildConfig.PLAY_BUILD) {
             Spacer(modifier = Modifier.height(16.dp))
@@ -582,7 +572,6 @@ fun AppSettingsScreen(
                                    "\nMODEL: ${Build.MODEL} (${Build.PRODUCT})" +
                                    "\nDISPLAY_VERSION: ${Build.DISPLAY}" +
                                    "\nID: ${Build.ID} (SDK ${Build.VERSION.SDK_INT_FULL})" +
-                                   "\nXposed enabled/active: ${XposedState.isAvailable}/${XposedState.bluetoothScopeEnabled}" +
                                    "\n\nApp details:" +
                                    "\nVERSION: ${BuildConfig.VERSION_NAME}" +
                                    "\nVERSION_CODE: ${BuildConfig.VERSION_CODE}" +

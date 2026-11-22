@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.billing.BillingManager
-import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import kotlin.math.roundToInt
 
 data class AppSettingsUiState(
@@ -31,7 +30,7 @@ data class AppSettingsUiState(
     val showCameraDialog: Boolean = false,
     val cameraPackageValue: String = "",
     val cameraPackageError: String? = null,
-    val vendorIdHook: Boolean = false,
+    val allowAacpTakeover: Boolean = false,
     val enableAttConnection: Boolean = false,
     val isPremium: Boolean = false,
     val connectionSuccessful: Boolean = false,
@@ -47,7 +46,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     private val _uiState = MutableStateFlow(AppSettingsUiState())
     val uiState = _uiState.asStateFlow()
 
-    private val xposedRemotePref = XposedRemotePrefProvider.create()
 
     val sharedPrefListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPref, key ->
         if (key == "connection_successful") {
@@ -149,7 +147,7 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 useAlternateHeadTrackingPackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true),
                 conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
-                vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false),
+                allowAacpTakeover = sharedPreferences.getBoolean("allow_aacp_takeover", false),
                 enableAttConnection = sharedPreferences.getBoolean("enable_att_connection", false),
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
@@ -240,9 +238,9 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
         setShowCameraDialog(false)
     }
 
-    fun setVendorIdHook(enabled: Boolean) {
-        xposedRemotePref.putBoolean("vendor_id_hook", enabled)
-        _uiState.update { it.copy(vendorIdHook = enabled) }
+    fun setAllowAacpTakeover(enabled: Boolean) {
+        sharedPreferences.edit { putBoolean("allow_aacp_takeover", enabled) }
+        _uiState.update { it.copy(allowAacpTakeover = enabled) }
     }
 
     fun setEnableAttConnection(enabled: Boolean) {

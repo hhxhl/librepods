@@ -54,7 +54,6 @@ import me.kavishdevar.librepods.presentation.navigation.Screen
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.PurchaseViewModel
-import me.kavishdevar.librepods.utils.XposedState
 
 @Composable
 fun PurchaseScreen(
@@ -111,15 +110,14 @@ fun PurchaseScreen(
                     orientation = ListItemOrientation.Vertical
                 )
 
-                if (XposedState.isAvailable) {
-                    StyledListItem(
-                        name = "${stringResource(R.string.hearing_aid)} (${stringResource(R.string.requires_xposed)})",
-                        description = stringResource(R.string.hearing_aid_description)
-                            .substringBefore("\n\n"),
-                        enabled = false,
-                        orientation = ListItemOrientation.Vertical
-                    )
-                }
+                StyledListItem(
+                    name = stringResource(R.string.hearing_aid),
+                    description = stringResource(R.string.hearing_aid_description)
+                        .substringBefore("\n\n"),
+                    enabled = false,
+                    orientation = ListItemOrientation.Vertical
+                )
+
             }
 
             Spacer(modifier = Modifier.height(24.dp))

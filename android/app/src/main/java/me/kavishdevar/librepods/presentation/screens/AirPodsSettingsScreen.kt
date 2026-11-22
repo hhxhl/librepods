@@ -19,8 +19,6 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
 package me.kavishdevar.librepods.presentation.screens
-
-// import me.kavishdevar.librepods.utils.RadareOffsetFinder
 import android.annotation.SuppressLint
 import android.content.Context.MODE_PRIVATE
 import android.content.Intent
@@ -333,7 +331,7 @@ fun AirPodsSettingsScreen(
                 state.instance?.model?.capabilities?.contains(Capability.PPE) == true
 
             if (hasHearingAidCapability || hasPPECapability) {
-                if (hasPPECapability || state.vendorIdHook) {
+                if (hasPPECapability || state.attAdvancedFeaturesEnabled) {
                     item(key = "spacer_hearing_health") {
                         Spacer(modifier = Modifier.height(24.dp))
                     }
@@ -342,7 +340,7 @@ fun AirPodsSettingsScreen(
                     HearingHealthSettings(
                         hasPPECapability = hasPPECapability,
                         hasHearingAidCapability = hasHearingAidCapability,
-                        vendorIdHook = state.vendorIdHook,
+                        attAdvancedFeaturesEnabled = state.attAdvancedFeaturesEnabled,
                         navigateToHearingProtection = navigateToHearingProtection,
                         navigateToHearingAid = navigateToHearingAid
                     )
@@ -484,7 +482,7 @@ fun AirPodsSettingsScreen(
                     },
                     navigateToAdaptiveStrength = navigateToAdaptiveStrength,
                     navigateToEqualizer = navigateToEqualizer,
-                    vendorIdHook = state.vendorIdHook,
+                    attAdvancedFeaturesEnabled = state.attAdvancedFeaturesEnabled,
                     isPremium = state.isPremium
                 )
             }

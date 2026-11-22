@@ -53,7 +53,6 @@ import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
-import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.services.AirPodsService
 
 @Suppress("ArrayInDataClass")
@@ -94,7 +93,7 @@ data class AirPodsUiState(
     val hearingAidData: ByteArray = byteArrayOf(),
 
     val isPremium: Boolean = false,
-    val vendorIdHook: Boolean = false,
+    val attAdvancedFeaturesEnabled: Boolean = false,
 
     val dynamicEndOfCharge: Boolean = false,
 
@@ -156,7 +155,7 @@ val demoState = AirPodsUiState(
     loudSoundReductionEnabled = true,
 
     isPremium = true,
-    vendorIdHook = true,
+    attAdvancedFeaturesEnabled = true,
 
     dynamicEndOfCharge = true,
 
@@ -227,7 +226,6 @@ class AirPodsViewModel(
     private val listeners =
         mutableMapOf<ControlCommandIdentifiers, AACPManager.ControlCommandListener>()
 
-    private val xposedRemotePref = XposedRemotePrefProvider.create()
 
     private lateinit var broadcastReceiver: BroadcastReceiver
 
@@ -491,7 +489,7 @@ class AirPodsViewModel(
                 "CYCLE_NOISE_CONTROL_MODES"
             ) ?: "CYCLE_NOISE_CONTROL_MODES"
         )
-        val vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false)
+        val attAdvancedFeaturesEnabled = sharedPreferences.getBoolean("enable_att_connection", false)
         val dynamicEndOfCharge = sharedPreferences.getBoolean("dynamic_end_of_charge", false)
 
         val connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false)
@@ -504,7 +502,7 @@ class AirPodsViewModel(
                 headGesturesEnabled = headGesturesEnabled,
                 leftAction = leftAction,
                 rightAction = rightAction,
-                vendorIdHook = vendorIdHook,
+                attAdvancedFeaturesEnabled = attAdvancedFeaturesEnabled,
                 dynamicEndOfCharge = dynamicEndOfCharge,
                 connectionSuccessful = connectionSuccessful,
             )

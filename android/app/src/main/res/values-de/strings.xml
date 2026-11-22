@@ -233,14 +233,9 @@
     <string name="no">Nein</string>
     <string name="yes">Ja</string>
     <string name="settings">Einstellungen</string>
-    <string name="requires_xposed">Xposed erforderlich</string>
     <string name="bypass_compatibility_check">Kompatibilitätsprüfung umgehen</string>
-    <string name="bypass_compatiblity_check_confirmation">Sicher, dass dein Gerät nativ unterstützt wird oder dass du das Xposed-Modul aktiviert hast?</string>
     <string name="not_supported">Nicht unterstützt</string>
     <string name="name_your_own_price">(Wähle deinen eigenen Preis)</string>
-    <string name="compatibility_play_dialog_confirmation">
-        Dieses Gerät wird möglicherweise aufgrund von Plattformbeschränkungen nicht unterstützt und benötigt ein Xposed-Framework. Setze unten den Haken und tippe OK ein, um fortzufahren.
-    </string>
     <string name="type_ok_to_continue">Tippe „%s“ ein, um fortzufahren</string>
     <string name="proceed">Fortfahren</string>
     <string name="read_compatibility_requirements">Ich habe die Kompatibilitätsanforderungen gelesen.</string>
@@ -252,8 +247,6 @@
     <string name="digital_assistant_on_long_press">Sprachassistent bei langem Drücken</string>
     <string name="digital_assistant_on_long_press_description">Sprachassistent durch langes Drücken auf den Stiel der AirPods Pro aufrufen.</string>
     <string name="customizations_unavailable">Anpassungen nicht verfügbar. Verbinde deine AirPods mindestens einmal, um darauf zuzugreifen.</string>
-    <string name="xposed_available">Xposed verfügbar</string>
-    <string name="app_enabled_in_xposed">App in Xposed aktiviert</string>
     <string name="subject">Betreff</string>
     <string name="describe_your_issue">Beschreibe dein Problem</string>
     <string name="play_foss_premium_banner">Deine App wurde auf die Google Play-Version aktualisiert; erweiterte Funktionen werden in %1$d Tagen deaktiviert. Aktualisiere über deine ursprüngliche Quelle, um bei der FOSS-Version zu bleiben, warte bis zum Ende dieses Zeitraums, um das Upgrade direkt zu kaufen, oder tippe hier, um einen Promo-Code anzufordern, falls du das Projekt bereits unterstützt.</string>

@@ -100,7 +100,6 @@ import me.kavishdevar.librepods.data.BatteryStatus
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
-import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.data.isHeadTrackingData
 import me.kavishdevar.librepods.presentation.overlays.IslandType
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
@@ -1767,13 +1766,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     @OptIn(ExperimentalMaterial3Api::class)
     private fun showSocketConnectionFailureNotification(errorMessage: String) {
         return // something causes too many notifications. turning off for now
-        if (BuildConfig.FLAVOR != "xposed") {
-            Log.w(
-                TAG,
-                "Not showing BluetoothConnectionManager.aacpSocket? error notification to user, the service shouldn't be running if it isn't supported."
-            )
-            return
-        }
         val notificationManager = getSystemService(NotificationManager::class.java)
 
         val notificationIntent = Intent(this, MainActivity::class.java)
@@ -2451,8 +2443,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             TAG, "owns connection: $ownsConnection"
         )
         if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
-            if (!XposedRemotePrefProvider.create().getBoolean("vendor_id_hook", false) || ownsConnection == 0) {
-                Log.d(TAG, "not taking over, vendorid is probably not set to apple")
+            // Explicit opt-in controls AACP takeover independently of KernelSU DID.
+            if (!sharedPreferences.getBoolean("allow_aacp_takeover", false) || ownsConnection == 0) {
+                Log.d(TAG, "not taking over: AACP takeover disabled or ownership unavailable")
                 return
             }
             if (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value[0]?.toInt() != 1 || (aacpManager.audioSource?.mac != localMac && aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)) {
@@ -2633,11 +2626,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         // AACP is sufficient for battery, ANC, ear detection and routing.
                         // The separate ATT L2CAP connection has caused periodic audio
                         // disconnects on some devices, so keep it opt-in (default off).
-                        // Vendor ID Hook must stay independent: it is also used by takeover.
                         BluetoothConnectionManager.aacpSocket = socket
                         BluetoothConnectionManager.attSocket = null
-                        val enableAtt = sharedPreferences.getBoolean("enable_att_connection", false) &&
-                            XposedRemotePrefProvider.create().getBoolean("vendor_id_hook", false)
+                        val enableAtt = sharedPreferences.getBoolean("enable_att_connection", false)
                         if (enableAtt) {
                             var optionalAttSocket: BluetoothSocket? = null
                             try {

@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
-import me.kavishdevar.librepods.utils.XposedState
 import me.kavishdevar.librepods.utils.bypassDeviceCheck
 import me.kavishdevar.librepods.utils.isSupported
 import me.kavishdevar.librepods.utils.removeDeviceCheckBypass
@@ -52,7 +51,7 @@ fun OnboardingScreen(
     onOnboardingComplete: () -> Unit,
 ) {
     val sharedPreferences = LocalContext.current.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    val isSupported = isSupported(sharedPreferences) || XposedState.bluetoothScopeEnabled
+    val isSupported = isSupported(sharedPreferences)
 
     val state = rememberCarouselState(
         initialItem = 0,

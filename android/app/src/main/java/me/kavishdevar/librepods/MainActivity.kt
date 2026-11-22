@@ -21,7 +21,6 @@
 package me.kavishdevar.librepods
 
 // import me.kavishdevar.librepods.screens.Onboarding
-// import me.kavishdevar.librepods.utils.RadareOffsetFinder
 //import dagger.hilt.android.AndroidEntryPoint
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -60,7 +59,6 @@ import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.bluetooth.SystemAirPodsAutoConnect
-import me.kavishdevar.librepods.utils.XposedState
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 lateinit var connectionStatusReceiver: BroadcastReceiver
@@ -69,14 +67,6 @@ lateinit var testReviewReceiver: BroadcastReceiver
 //@AndroidEntryPoint
 @ExperimentalMaterial3Api
 class MainActivity : ComponentActivity() {
-    companion object {
-        init {
-            if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-                System.loadLibrary("l2c_fcr_hook")
-            }
-        }
-    }
-
     @ExperimentalHazeMaterialsApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

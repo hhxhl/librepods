@@ -151,8 +151,6 @@ dependencies {
     implementation(libs.backdrop)
 //    implementation(libs.hilt)
 //    implementation(libs.hilt.compiler)
-    compileOnly(libs.libxposed.api)
-    implementation(libs.libxposed.service)
     implementation(libs.play.review)
     implementation(libs.play.review.ktx)
     implementation(libs.androidx.navigation3.ui)

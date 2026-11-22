@@ -45,7 +45,7 @@ fun AudioSettings(
     navigateToAdaptiveStrength: () -> Unit,
     navigateToEqualizer: () -> Unit,
 
-    vendorIdHook: Boolean,
+    attAdvancedFeaturesEnabled: Boolean,
     isPremium: Boolean
 ) {
     if (adaptiveVolumeCapability || conversationAwarenessCapability || loudSoundReductionCapability || adaptiveAudioCapability) {
@@ -70,7 +70,7 @@ fun AudioSettings(
                 )
             }
 
-            if (loudSoundReductionCapability && vendorIdHook) {
+            if (loudSoundReductionCapability && attAdvancedFeaturesEnabled) {
                 StyledToggle(
                     label = stringResource(R.string.loud_sound_reduction),
                     description = stringResource(R.string.loud_sound_reduction_description),

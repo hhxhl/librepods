@@ -82,7 +82,7 @@ fun HearingProtectionScreen(viewModel: AirPodsViewModel, navigateToPurchase: () 
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        if (state.vendorIdHook) {
+        if (state.attAdvancedFeaturesEnabled) {
             StyledToggle(
                 title = stringResource(R.string.environmental_noise),
                 label = stringResource(R.string.loud_sound_reduction),

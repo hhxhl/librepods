@@ -129,7 +129,7 @@ fun TroubleshootingScreen() {
 
     var isCollectingLogs by remember { mutableStateOf(false) }
     var showTroubleshootingSteps by remember { mutableStateOf(false) }
-    var currentStep by remember { mutableIntStateOf(0) }
+    var currentStep by remember { mutableIntStateOf(1) }
     var logContent by remember { mutableStateOf("") }
     var selectedLogFile by remember { mutableStateOf<File?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -193,7 +193,6 @@ fun TroubleshootingScreen() {
 
     LaunchedEffect(currentStep) {
         instructionText = when (currentStep) {
-            0 -> "First, let's ensure Xposed module is properly configured. Tap the button below to check Xposed scope settings."
             1 -> "Please put your AirPods in the case and close it, so they disconnect completely."
             2 -> "Preparing to collect logs... Please wait."
             3 -> "Now, open the AirPods case and connect your AirPods. Logs are being collected. Connection will be detected automatically, or you can manually stop logging when you're done."
@@ -407,26 +406,6 @@ fun TroubleshootingScreen() {
                         Spacer(modifier = Modifier.height(16.dp))
 
                         when (currentStep) {
-                            0 -> {
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            logCollector.openXposedSettings(context)
-                                            delay(2000)
-                                            currentStep = 1
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = buttonBgColor,
-                                        contentColor = textColor
-                                    )
-                                ) {
-                                    Text("Open Xposed Settings")
-                                }
-                            }
-
                             1 -> {
                                 Button(
                                     onClick = {
@@ -493,7 +472,7 @@ fun TroubleshootingScreen() {
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                     isCollectingLogs = false
-                                                    currentStep = 0
+                                                    currentStep = 1
                                                 }
                                             }
                                         }
@@ -640,7 +619,7 @@ fun TroubleshootingScreen() {
 
                                 Button(
                                     onClick = {
-                                        currentStep = 0
+                                        currentStep = 1
                                         showTroubleshootingSteps = false
                                     },
                                     modifier = Modifier.fillMaxWidth(),

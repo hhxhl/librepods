@@ -29,18 +29,6 @@ class LogCollector(private val context: Context) {
     private var isCollecting = false
     private var logProcess: Process? = null
 
-    suspend fun openXposedSettings(context: Context) {
-        withContext(Dispatchers.IO) {
-            val command = if (android.os.Build.VERSION.SDK_INT >= 29) {
-                "am broadcast -a android.telephony.action.SECRET_CODE -d android_secret_code://5776733 android"
-            } else {
-                "am broadcast -a android.provider.Telephony.SECRET_CODE -d android_secret_code://5776733 android"
-            }
-
-            executeRootCommand(command)
-        }
-    }
-
     suspend fun clearLogs() {
         withContext(Dispatchers.IO) {
             executeRootCommand("logcat -c")

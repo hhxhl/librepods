@@ -17,8 +17,6 @@
 */
 
 package me.kavishdevar.librepods.presentation.screens
-
-// import me.kavishdevar.librepods.utils.RadareOffsetFinder
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.foundation.background
@@ -196,7 +194,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
             initialized.value = true
         }
 
-        if (state.vendorIdHook) {
+        if (state.attAdvancedFeaturesEnabled) {
             StyledToggle(
                 label = stringResource(R.string.transparency_mode),
                 checked = enabled.value,

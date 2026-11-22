@@ -108,7 +108,7 @@ Check out [PR #655](https://github.com/librepods-org/librepods/pull/655).
 
 Turns out, if you change the VendorID in DID Profile to that of Apple, you get access to several special features!
 
-You can do this on Linux by editing the DeviceID in `/etc/bluetooth/main.conf`. Add this line to the config file `DeviceID = bluetooth:004C:0000:0000`. For android you can enable the `act as Apple device` setting in the app's settings (shown only when Xposed is available and LibrePods module is enabled).
+You can do this on Linux by editing the DeviceID in `/etc/bluetooth/main.conf`. Add this line to the config file `DeviceID = bluetooth:004C:0000:0000`. In this Android fork, Vendor ID is set outside LibrePods by a separate KernelSU `system.prop` DID module (Apple vendor ID 76, Bluetooth SIG source 1). The APK contains no Xposed/LSPosed hook.
 
 ## Multi-device Connectivity
 
@@ -132,7 +132,7 @@ The dissector had not been used in LibrePods for most of the implementation; I h
 
 These parts of the app were completely AI-generated: 
 - Head Gestures - all of it, including logic and the UI
-- The offset setup with r2+the xposed module (both versions)
+- Legacy offset-based Xposed hooks are not included in this Android fork.
 - Troubleshooter and LogCollector
 
 Rest everything- the background service, the Bluetooth manager classes (AACP and ATT), the entire UI, even the smallest components were written manually.

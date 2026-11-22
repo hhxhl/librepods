@@ -29,11 +29,11 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 fun HearingHealthSettings(
     hasPPECapability: Boolean,
     hasHearingAidCapability: Boolean,
-    vendorIdHook: Boolean,
+    attAdvancedFeaturesEnabled: Boolean,
     navigateToHearingProtection: () -> Unit,
     navigateToHearingAid: () -> Unit
 ) {
-    val shouldShowHearingAid = hasHearingAidCapability && vendorIdHook
+    val shouldShowHearingAid = hasHearingAidCapability && attAdvancedFeaturesEnabled
 
     if (hasPPECapability && shouldShowHearingAid) {
         StyledList(title = stringResource(R.string.hearing_health)) {
