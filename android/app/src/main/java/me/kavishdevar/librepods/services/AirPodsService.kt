@@ -943,8 +943,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     MediaController.sendPause()
                     MediaController.pausedForOtherDevice = true
                     otherDeviceTookOver = true
-                    // Do not force an A2DP/HEADSET connection policy change here.
-                    // Let the OS and AirPods handle profile handover to the other device.
+                    disconnectAudio(
+                        this@AirPodsService, device
+                    )
                 }
             }
 
@@ -963,11 +964,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     byteArrayOf(0x00)
                 )
                 otherDeviceTookOver = true
-                // Keep the AACP ownership handoff, but do not forcibly disconnect
-                // local audio profiles. This avoids fighting the OS's A2DP routing.
+                disconnectAudio(
+                    this@AirPodsService, device
+                )
                 if (reasonReverseTapped) {
-                    Log.d(TAG, "reverse tapped, yielding audio ownership")
+                    Log.d(TAG, "reverse tapped, disconnecting audio")
                     disconnectedBecauseReversed = true
+                    disconnectAudio(this@AirPodsService, device)
                     showIsland(
                         this@AirPodsService,
                         (batteryNotification.getBattery()
