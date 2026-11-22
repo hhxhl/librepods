@@ -52,7 +52,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.android.play.core.review.ReviewManagerFactory
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
-import me.kavishdevar.librepods.data.AirPodsNotifications
 import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.presentation.navigation.NavigationRoot
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
@@ -110,7 +109,6 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "Error while unregistering receiver: $e")
         }
-        sendBroadcast(Intent(AirPodsNotifications.DISCONNECT_RECEIVERS))
         super.onDestroy()
     }
 
@@ -180,8 +178,7 @@ fun Main() {
                 Log.w("MainActivity", "Unable to unbind AirPods service", e)
             }
         }
-        // A bound service otherwise survives the Activity being hidden.
-        context.stopService(Intent(context, AirPodsService::class.java))
+        // Unbind only. A connected-device foreground service must outlive the UI.
         airPodsService.value = null
     }
 
@@ -210,21 +207,20 @@ fun Main() {
             }
         }
         try {
-            context.startForegroundService(serviceIntent)
+            // A visible Activity may bind for controls even when AirPods are disconnected.
+            // The Bluetooth connection receiver starts the foreground service separately.
             if (context.bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)) {
                 boundConnection.value = connection
             } else {
                 Log.w("MainActivity", "Unable to bind AirPods service")
-                context.stopService(serviceIntent)
             }
         } catch (e: Exception) {
             Log.e("MainActivity", "Unable to start AirPods service", e)
-            context.stopService(serviceIntent)
         }
     }
 
-    // The full AirPods service is only kept while the UI is visible.
-    // The independently registered BLE PendingIntent scan survives this lifecycle.
+    // UI binding does not own the lifetime of an active Bluetooth connection.
+    // System-managed BLE discovery remains independent while disconnected.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, onboardingComplete.value) {
         val observer = LifecycleEventObserver { _, event ->

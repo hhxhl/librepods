@@ -289,14 +289,6 @@ fun AppSettingsScreen(
                 )
             }
 
-            StyledToggle(
-                label = stringResource(R.string.allow_aacp_takeover),
-                description = stringResource(R.string.allow_aacp_takeover_description),
-                checked = state.allowAacpTakeover,
-                onCheckedChange = viewModel::setAllowAacpTakeover,
-                enabled = state.isPremium
-            )
-
             StyledList(title = stringResource(R.string.takeover_airpods_state)) {
                 StyledToggle(
                     label = stringResource(R.string.takeover_disconnected),

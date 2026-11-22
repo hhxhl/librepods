@@ -13,6 +13,7 @@ import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.BluetoothLeScanner
@@ -28,6 +29,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
+import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.utils.BluetoothCryptography
 
 /**
@@ -337,10 +339,13 @@ class SystemAirPodsScanReceiver : BroadcastReceiver() {
     }
 }
 
-/** Receives platform A2DP state events even if the LibrePods app process is absent. */
+/** Receives protected platform profile and ACL events without a resident app process. */
 class SystemAirPodsA2dpStateReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) return
+        val action = intent.action
+        if (action != BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED &&
+            action != BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED &&
+            action != BluetoothDevice.ACTION_ACL_DISCONNECTED) return
         if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
             PackageManager.PERMISSION_GRANTED) return
 
@@ -350,11 +355,27 @@ class SystemAirPodsA2dpStateReceiver : BroadcastReceiver() {
             ?: return
         if (!device.address.equals(target, ignoreCase = true)) return
 
+        if (action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
+            // A2DP may disconnect while a call still uses HFP. Only the physical
+            // ACL disconnect is used to end the connected-device service.
+            context.stopService(Intent(context, AirPodsService::class.java))
+            Log.i("AirPodsSystemScan", "Paired AirPods ACL disconnected; service stopped")
+            return
+        }
+
         when (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)) {
-            BluetoothProfile.STATE_CONNECTED ->
-                SystemAirPodsAutoConnect.onAirPodsA2dpConnected(context.applicationContext)
-            BluetoothProfile.STATE_DISCONNECTED ->
-                SystemAirPodsAutoConnect.onAirPodsA2dpDisconnected(context.applicationContext)
+            BluetoothProfile.STATE_CONNECTED -> {
+                if (action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) {
+                    SystemAirPodsAutoConnect.onAirPodsA2dpConnected(context.applicationContext)
+                }
+                AirPodsService.startForConnectedDevice(context.applicationContext)
+            }
+            BluetoothProfile.STATE_DISCONNECTED -> {
+                if (action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) {
+                    SystemAirPodsAutoConnect.onAirPodsA2dpDisconnected(context.applicationContext)
+                }
+                // Do not end the service on a single profile disconnect.
+            }
         }
     }
 }

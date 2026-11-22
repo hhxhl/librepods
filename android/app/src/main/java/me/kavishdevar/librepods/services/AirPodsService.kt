@@ -55,6 +55,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.os.PowerManager
 import android.os.UserHandle
 import android.provider.Settings
@@ -70,6 +71,7 @@ import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -160,6 +162,37 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
+    @Volatile private var foregroundStarted = false
+    @Volatile private var lastAacpBatteryMs = 0L
+
+    // BLE is a fallback only when AACP has not delivered a battery report recently.
+    // This avoids replacing newer AACP information with coarse BLE values.
+    private fun useBleBatteryFallback(): Boolean =
+        BluetoothConnectionManager.aacpSocket?.isConnected != true ||
+            lastAacpBatteryMs == 0L ||
+            SystemClock.elapsedRealtime() - lastAacpBatteryMs >= 120_000L
+
+    companion object {
+        init { System.loadLibrary("bluetooth_socket") }
+
+        const val ACTION_DEVICE_CONNECTED = "me.kavishdevar.librepods.DEVICE_CONNECTED_FGS"
+
+        // This is invoked only for the saved, paired AirPods, when their Classic
+        // Bluetooth profile is connected. No process or service is kept for scans.
+        fun startForConnectedDevice(context: Context) {
+            try {
+                ContextCompat.startForegroundService(
+                    context, Intent(context, AirPodsService::class.java).apply {
+                        action = ACTION_DEVICE_CONNECTED
+                    }
+                )
+            } catch (e: Exception) {
+                // Modern Android may prohibit background FGS starts from a BT broadcast.
+                // Do not leave a background service running after a failed attempt.
+                Log.w(TAG, "Unable to start connected-device foreground service", e)
+            }
+        }
+    }
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -235,12 +268,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     lateinit var bleManager: BLEManager
 
-    companion object {
-        init {
-            System.loadLibrary("bluetooth_socket")
-        }
-    }
-
     private fun applyBleBatteryStatus(status: BLEManager.AirPodsStatus) {
         if (status.leftBattery == null && status.rightBattery == null && status.caseBattery == null) {
             return
@@ -269,7 +296,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 connectToSocket(bluetoothAdapter, bluetoothDevice)
             }
             Log.d(TAG, "Device status changed")
-            if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            if (!useBleBatteryFallback()) return
             applyBleBatteryStatus(device)
             updateBattery()
         }
@@ -283,7 +310,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         ) {
             if (lidOpen) {
                 Log.d(TAG, "Lid opened")
-                if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
+                if (useBleBatteryFallback()) {
                     bleManager.getMostRecentStatus()?.let { applyBleBatteryStatus(it) }
                 }
                 showPopup(
@@ -291,8 +318,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     getSharedPreferences("settings", MODE_PRIVATE).getString("name", "AirPods Pro")
                         ?: "AirPods"
                 )
-                if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
-                sendBatteryBroadcast()
+                if (!useBleBatteryFallback()) return
+                updateBattery()
             } else {
                 Log.d(TAG, "Lid closed")
             }
@@ -310,7 +337,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         override fun onBatteryChanged(device: BLEManager.AirPodsStatus) {
-            if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            if (!useBleBatteryFallback()) return
             applyBleBatteryStatus(device)
             updateBattery()
             Log.d(TAG, "Battery changed")
@@ -391,7 +418,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         ServiceManager.setService(this)
-        startForegroundNotification()
+        // A UI-only bound service is never promoted to foreground while disconnected.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             initGestureDetector()
         } else {
@@ -674,7 +701,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
             }
         }
-        val showIslandReceiver = object : BroadcastReceiver() {
+        showIslandReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == "me.kavishdevar.librepods.cross_device_island") {
                     showIsland(
@@ -735,7 +762,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
                                 if (profile == BluetoothProfile.A2DP) {
                                     val connectedDevices = proxy.connectedDevices
-                                    if (connectedDevices.isNotEmpty()) {
+                                    if (connectedDevices.any { it.address.equals(device.address, ignoreCase = true) }) {
+                                        startForConnectedDevice(this@AirPodsService)
 //                                        if (!CrossDevice.isAvailable) {
                                         CoroutineScope(Dispatchers.IO).launch {
                                             connectToSocket(bluetoothAdapter, device)
@@ -830,6 +858,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         aacpManager.setPacketCallback(object : AACPManager.PacketCallback {
             @SuppressLint("MissingPermission")
             override fun onBatteryInfoReceived(batteryInfo: ByteArray) {
+                if (batteryNotification.isBatteryData(batteryInfo)) {
+                    lastAacpBatteryMs = SystemClock.elapsedRealtime()
+                }
                 batteryNotification.setBattery(batteryInfo)
                 sendBroadcast(Intent(AirPodsNotifications.BATTERY_DATA).apply {
                     putParcelableArrayListExtra("data", ArrayList(batteryNotification.getBattery()))
@@ -1691,6 +1722,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var device: BluetoothDevice? = null
 
     private lateinit var earReceiver: BroadcastReceiver
+    private lateinit var showIslandReceiver: BroadcastReceiver
     var widgetMobileBatteryEnabled = false
 
     object BatteryChangedIntentReceiver : BroadcastReceiver() {
@@ -1709,12 +1741,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @OptIn(ExperimentalMaterial3Api::class)
     fun startForegroundNotification() {
-        val disconnectedNotificationChannel = NotificationChannel(
-            "background_service_status",
-            "Background Service Status",
-            NotificationManager.IMPORTANCE_NONE
-        )
-
         val connectedNotificationChannel = NotificationChannel(
             "airpods_connection_status",
             "AirPods Connection Status",
@@ -1733,32 +1759,33 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(disconnectedNotificationChannel)
         notificationManager.createNotificationChannel(connectedNotificationChannel)
         notificationManager.createNotificationChannel(socketFailureChannel)
 
-        val notificationSettingsIntent =
-            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                putExtra(Settings.EXTRA_CHANNEL_ID, "background_service_status")
-            }
-        val pendingIntentNotifDisable = PendingIntent.getActivity(
-            this,
-            0,
-            notificationSettingsIntent,
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        val notification = NotificationCompat.Builder(this, "background_service_status")
-            .setSmallIcon(R.drawable.airpods).setContentTitle("Background Service Running")
-            .setContentText("Useless notification, disable it by clicking on it.")
-            .setContentIntent(pendingIntentNotifDisable).setCategory(Notification.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).build()
+        val notification = NotificationCompat.Builder(this, "airpods_connection_status")
+            .setSmallIcon(R.drawable.airpods)
+            .setContentTitle(config.deviceName)
+            .setContentText("AirPods connected · waiting for battery status")
+            .setContentIntent(openApp)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
 
         try {
             startForeground(1, notification)
+            foregroundStarted = true
+            notificationManager.cancel(2) // Older releases used a separate battery notification.
+            if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
+                updateNotificationContent(true, config.deviceName, batteryNotification.getBattery())
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Unable to promote connected AirPods service to foreground", e)
+            stopSelf()
         }
     }
 
@@ -2064,8 +2091,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             val updatedNotification = updatedNotificationBuilder.build()
 
-            notificationManager.notify(2, updatedNotification)
-            notificationManager.cancel(1)
+            notificationManager.notify(if (foregroundStarted) 1 else 2, updatedNotification)
+            if (foregroundStarted) notificationManager.cancel(2)
         } else if (!connected) {
             notificationManager.cancel(2)
         } else if (!config.bleOnlyMode && BluetoothConnectionManager.aacpSocket?.isConnected != true) {
@@ -2369,7 +2396,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 Log.d(TAG, "Received bluetooth connection broadcast: action=$action")
                 val uuid = ParcelUuid.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
 
-                if (BluetoothDevice.ACTION_ACL_CONNECTED == action) {
+                if (BluetoothDevice.ACTION_ACL_DISCONNECTED == action) {
+                    val savedMac = context?.getSharedPreferences("settings", MODE_PRIVATE)
+                        ?.getString("mac_address", "")
+                    if (savedMac?.equals(bluetoothDevice.address, ignoreCase = true) == true) {
+                        ServiceManager.getService()?.onPhysicalAirPodsDisconnected()
+                    }
+                } else if (BluetoothDevice.ACTION_ACL_CONNECTED == action) {
                     if (bluetoothDevice.uuids?.contains(uuid) == true) {
                         val intent = Intent(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)
                         intent.putExtra("name", name)
@@ -2400,6 +2433,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
     var externalBroadcastReceiver: BroadcastReceiver? = null
 
+    private fun onPhysicalAirPodsDisconnected() {
+        Log.i(TAG, "Paired AirPods ACL disconnected; releasing connected-device service")
+        try { BluetoothConnectionManager.aacpSocket?.close() } catch (_: Exception) { }
+        try { BluetoothConnectionManager.attSocket?.close() } catch (_: Exception) { }
+        BluetoothConnectionManager.aacpSocket = null
+        BluetoothConnectionManager.attSocket = null
+        aacpManager.disconnected()
+        attManager.disconnected()
+        gestureDetector?.stopDetection()
+        isHeadTrackingActive = false
+        getSystemService(NotificationManager::class.java).cancel(2)
+        if (foregroundStarted) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+        }
+        // A still-visible UI may keep a bound-only service; otherwise this stops it.
+        stopSelf()
+    }
+
     @SuppressLint("InlinedApi", "MissingPermission", "UnspecifiedRegisterReceiverFlag")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service started with intent action: ${intent?.action}")
@@ -2411,8 +2463,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             takeOver("music", manualTakeOverAfterReversed = true)
         }
 
-        // UI-scoped service: do not restart it automatically after process death.
-        // The independent system-managed BLE scan handles background discovery.
+        if (intent?.action == ACTION_DEVICE_CONNECTED && !foregroundStarted) {
+            startForegroundNotification()
+        }
+        // No restart until the OS reports another physical Bluetooth connection.
         return START_NOT_STICKY
     }
 
@@ -2443,9 +2497,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             TAG, "owns connection: $ownsConnection"
         )
         if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
-            // Explicit opt-in controls AACP takeover independently of KernelSU DID.
-            if (!sharedPreferences.getBoolean("allow_aacp_takeover", false) || ownsConnection == 0) {
-                Log.d(TAG, "not taking over: AACP takeover disabled or ownership unavailable")
+            if (ownsConnection == 0) {
+                Log.d(TAG, "not taking over: ownership unavailable")
                 return
             }
             if (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value[0]?.toInt() != 1 || (aacpManager.audioSource?.mac != localMac && aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)) {
@@ -3093,9 +3146,22 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         Log.d(TAG, "Service stopped is being destroyed for some reason!")
 
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
-        // The previous service instance must not keep publishing battery updates
-        // after the UI creates another instance. Do not close the shared BT socket.
+        // A started service survives Activity unbinding. Once *this service* is
+        // destroyed, no orphaned reader or socket may remain in the process.
         aacpManager.clearPacketCallback()
+        try { BluetoothConnectionManager.aacpSocket?.close() } catch (e: Exception) {
+            Log.w(TAG, "Error closing AACP socket", e)
+        }
+        try { BluetoothConnectionManager.attSocket?.close() } catch (e: Exception) {
+            Log.w(TAG, "Error closing ATT socket", e)
+        }
+        BluetoothConnectionManager.aacpSocket = null
+        BluetoothConnectionManager.attSocket = null
+        aacpManager.disconnected()
+        attManager.disconnected()
+        if (ServiceManager.getService() === this) ServiceManager.setService(null)
+        gestureDetector?.stopDetection()
+        getSystemService(NotificationManager::class.java).cancel(2)
 
         try {
             unregisterReceiver(bluetoothReceiver)
@@ -3117,6 +3183,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        try { unregisterReceiver(showIslandReceiver) } catch (_: Exception) { }
+        if (widgetMobileBatteryEnabled) {
+            try { unregisterReceiver(BatteryChangedIntentReceiver) } catch (_: Exception) { }
+        }
+        if (foregroundStarted) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+        }
         try {
             bleManager.stopScanning()
         } catch (e: Exception) {
@@ -3125,6 +3199,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (checkSelfPermission("android.permission.READ_PHONE_STATE") == PackageManager.PERMISSION_GRANTED) {
             telephonyManager.unregisterTelephonyCallback(phoneStateListener)
         }
+        // Let detached overlay windows release their own receivers as well.
+        sendBroadcast(Intent(AirPodsNotifications.DISCONNECT_RECEIVERS).setPackage(packageName))
 //        isConnectedLocally = false
 //        CrossDevice.isAvailable = true
         super.onDestroy()

@@ -239,8 +239,6 @@
     <string name="no">否</string>
     <string name="yes">是</string>
     <string name="settings">设置</string>
-    <string name="allow_aacp_takeover">允许 AACP 主动接管音源</string>
-    <string name="allow_aacp_takeover_description">默认关闭。开启后，下方的接管条件才会允许 LibrePods 主动请求切换音源；不影响 BLE 自动连接。</string>
     <string name="enable_att_connection">启用 ATT 高级功能（不稳定）</string>
     <string name="enable_att_connection_description">默认关闭，避免部分设备反复断开蓝牙音频。助听、高级通透模式和降低响亮声音功能需要开启；重新连接 AirPods 后生效。</string>
     <string name="bypass_compatibility_check">跳过兼容性检查</string>

@@ -30,7 +30,6 @@ data class AppSettingsUiState(
     val showCameraDialog: Boolean = false,
     val cameraPackageValue: String = "",
     val cameraPackageError: String? = null,
-    val allowAacpTakeover: Boolean = false,
     val enableAttConnection: Boolean = false,
     val isPremium: Boolean = false,
     val connectionSuccessful: Boolean = false,
@@ -147,7 +146,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 useAlternateHeadTrackingPackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true),
                 conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
-                allowAacpTakeover = sharedPreferences.getBoolean("allow_aacp_takeover", false),
                 enableAttConnection = sharedPreferences.getBoolean("enable_att_connection", false),
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
@@ -236,11 +234,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
             sharedPreferences.edit { putString("custom_camera_package", _uiState.value.cameraPackageValue) }
         }
         setShowCameraDialog(false)
-    }
-
-    fun setAllowAacpTakeover(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("allow_aacp_takeover", enabled) }
-        _uiState.update { it.copy(allowAacpTakeover = enabled) }
     }
 
     fun setEnableAttConnection(enabled: Boolean) {
