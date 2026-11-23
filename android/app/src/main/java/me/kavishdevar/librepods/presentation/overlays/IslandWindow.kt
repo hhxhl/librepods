@@ -49,7 +49,6 @@ import android.view.animation.AnticipateOvershootInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
-import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -69,7 +68,6 @@ import kotlin.math.abs
 
 enum class IslandType {
     CONNECTED,
-    TAKING_OVER,
     MOVED_TO_REMOTE,
     MOVED_TO_OTHER_DEVICE,
 }
@@ -165,7 +163,7 @@ class IslandWindow(private val context: Context) {
     @SuppressLint("SetTextI18s", "ClickableViewAccessibility", "UnspecifiedRegisterReceiverFlag",
         "SetTextI18n"
     )
-    fun show(name: String, batteryPercentage: Int, context: Context, type: IslandType = IslandType.CONNECTED, reversed: Boolean = false, otherDeviceName: String? = null) {
+    fun show(name: String, batteryPercentage: Int, context: Context, type: IslandType = IslandType.CONNECTED, otherDeviceName: String? = null) {
         if (ServiceManager.getService()?.islandOpen == true) return
         else ServiceManager.getService()?.islandOpen = true
 
@@ -205,26 +203,6 @@ class IslandWindow(private val context: Context) {
 
         batteryProgressBar.isIndeterminate = false
         islandView.findViewById<TextView>(R.id.island_device_name).text = name
-
-        val actionButton = islandView.findViewById<ImageButton>(R.id.island_action_button)
-        val batteryBg = islandView.findViewById<ProgressBar>(R.id.island_battery_bg)
-        if (type == IslandType.MOVED_TO_OTHER_DEVICE && !reversed) {
-            actionButton.visibility = View.VISIBLE
-            actionButton.setOnClickListener {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ServiceManager.getService()?.takeOver("reverse")
-                }
-                close()
-            }
-            batteryText.visibility = View.GONE
-            batteryProgressBar.visibility = View.GONE
-            batteryBg.visibility = View.GONE
-        } else {
-            actionButton.visibility = View.GONE
-            batteryText.visibility = View.VISIBLE
-            batteryProgressBar.visibility = View.VISIBLE
-            batteryBg.visibility = View.VISIBLE
-        }
 
         val batteryIntentFilter = IntentFilter(AirPodsNotifications.BATTERY_DATA)
         batteryIntentFilter.addAction(AirPodsNotifications.DISCONNECT_RECEIVERS)
@@ -355,9 +333,6 @@ class IslandWindow(private val context: Context) {
             IslandType.CONNECTED -> {
                 islandView.findViewById<TextView>(R.id.island_connected_text).text = context.getString(R.string.island_connected_text)
             }
-            IslandType.TAKING_OVER -> {
-                islandView.findViewById<TextView>(R.id.island_connected_text).text = context.getString(R.string.island_taking_over_text)
-            }
             IslandType.MOVED_TO_REMOTE -> {
                 islandView.findViewById<TextView>(R.id.island_connected_text).text = context.getString(R.string.island_moved_to_remote_text)
             }
@@ -365,11 +340,8 @@ class IslandWindow(private val context: Context) {
                 if (otherDeviceName == null || otherDeviceName.isEmpty()) {
                     e("IslandWindow", "Other device name is null or empty for MOVED_TO_OTHER_DEVICE type")
                 }
-                if (reversed) {
-                    islandView.findViewById<TextView>(R.id.island_connected_text).text = context.getString(R.string.island_moved_to_other_device_reversed_text)
-                } else {
-                    islandView.findViewById<TextView>(R.id.island_connected_text).text = context.getString(R.string.island_moved_to_other_device_text, otherDeviceName)
-                }
+                islandView.findViewById<TextView>(R.id.island_connected_text).text =
+                    context.getString(R.string.island_moved_to_other_device_text, otherDeviceName)
             }
         }
 

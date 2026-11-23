@@ -43,14 +43,12 @@ object MediaController {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var preferenceChangeListener: SharedPreferences.OnSharedPreferenceChangeListener
 
-    var pausedWhileTakingOver = false
     var pausedForOtherDevice = false
 
     private var lastSelfActionAt: Long = 0L
     private const val SELF_ACTION_IGNORE_MS = 800L
     private const val PLAYBACK_DEBOUNCE_MS = 300L
     private var lastPlaybackCallbackAt: Long = 0L
-    private var lastKnownIsMusicActive: Boolean? = null
 
     private const val PAUSED_FOR_OTHER_DEVICE_CLEAR_MS = 500L
     private val clearPausedForOtherDeviceRunnable = Runnable {
@@ -64,8 +62,6 @@ object MediaController {
 
     var recentlyLostOwnership: Boolean = false
 
-    private var lastPlayWithReplay: Boolean = false
-    private var lastPlayTime: Long = 0L
 
     fun initialize(audioManager: AudioManager, sharedPreferences: SharedPreferences) {
         if (this::audioManager.isInitialized) {
@@ -103,15 +99,7 @@ object MediaController {
             super.onPlaybackConfigChanged(configs)
             val now = SystemClock.uptimeMillis()
             val isActive = audioManager.isMusicActive
-            Log.d("MediaController", "Playback config changed, iPausedTheMedia: $iPausedTheMedia, isActive: $isActive, pausedForOtherDevice: $pausedForOtherDevice, lastKnownIsMusicActive: $lastKnownIsMusicActive")
-
-            if (!isActive && lastPlayWithReplay && now - lastPlayTime < 2500L) {
-                Log.d("MediaController", "Music paused shortly after play with replay; retrying play")
-                lastPlayWithReplay = false
-                sendPlay()
-                lastKnownIsMusicActive = true
-                return
-            }
+            Log.d("MediaController", "Playback config changed, iPausedTheMedia: $iPausedTheMedia, isActive: $isActive, pausedForOtherDevice: $pausedForOtherDevice")
 
             if (now - lastPlaybackCallbackAt < PLAYBACK_DEBOUNCE_MS) {
                 Log.d("MediaController", "Ignoring playback callback due to debounce (${now - lastPlaybackCallbackAt}ms)")
@@ -122,7 +110,6 @@ object MediaController {
 
             if (now - lastSelfActionAt < SELF_ACTION_IGNORE_MS) {
                 Log.d("MediaController", "Ignoring playback callback because it's likely caused by our own action (${now - lastSelfActionAt}ms since last self-action)")
-                lastKnownIsMusicActive = isActive
                 return
             }
 
@@ -150,22 +137,13 @@ object MediaController {
                 handler.postDelayed(clearPausedForOtherDeviceRunnable, PAUSED_FOR_OTHER_DEVICE_CLEAR_MS)
 
                 if (isActive) {
-                    Log.d("MediaController", "Detected play while pausedForOtherDevice; attempting to take over")
-                    if (!recentlyLostOwnership && hasNewMusicOrMovie) {
-                        pausedForOtherDevice = false
-                        userPlayedTheMedia = true
-                        if (!pausedWhileTakingOver) {
-                            AudioSwitchTrace.event("Media", "takeover_trigger", "reason=resume_after_other_device")
-                            ServiceManager.getService()?.takeOver("music")
-                        }
-                    } else {
-                        Log.d("MediaController", "Skipping take-over due to recent ownership loss or no new music/movie")
-                    }
+                    Log.d("MediaController", "Detected user playback after other-device pause; leaving routing to Android")
+                    pausedForOtherDevice = false
+                    userPlayedTheMedia = true
                 } else {
                     Log.d("MediaController", "Still not active while pausedForOtherDevice; will clear state after timeout")
                 }
 
-                lastKnownIsMusicActive = isActive
                 return
             }
 
@@ -186,21 +164,6 @@ object MediaController {
                     }
                 }, 7)
             }
-
-            Log.d("MediaController", "pausedWhileTakingOver: $pausedWhileTakingOver")
-            if (!pausedWhileTakingOver && isActive && hasNewMusicOrMovie) {
-                if (lastKnownIsMusicActive != true) {
-                    if (!recentlyLostOwnership) {
-                        Log.d("MediaController", "Music/movie is active and not pausedWhileTakingOver; requesting takeOver")
-                        AudioSwitchTrace.event("Media", "takeover_trigger", "reason=media_started")
-                        ServiceManager.getService()?.takeOver("music")
-                    } else {
-                        Log.d("MediaController", "Skipping take-over due to recent ownership loss")
-                    }
-                }
-            }
-
-            lastKnownIsMusicActive = hasNewMusicOrMovie && isActive
         }
     }
 
@@ -281,13 +244,9 @@ object MediaController {
     }
 
     @Synchronized
-    fun sendPlay(replayWhenPaused: Boolean = false, force: Boolean = false) {
-        Log.d("MediaController", "Sending play with iPausedTheMedia: $iPausedTheMedia, replayWhenPaused: $replayWhenPaused, force: $force")
-        if (replayWhenPaused) {
-            lastPlayWithReplay = true
-            lastPlayTime = SystemClock.uptimeMillis()
-        }
-        AudioSwitchTrace.event("Media", "play_decision", "force=$force willDispatch=${iPausedTheMedia || force} replayWhenPaused=$replayWhenPaused")
+    fun sendPlay(force: Boolean = false) {
+        Log.d("MediaController", "Sending play with iPausedTheMedia: $iPausedTheMedia, force: $force")
+        AudioSwitchTrace.event("Media", "play_decision", "force=$force willDispatch=${iPausedTheMedia || force}")
         if (iPausedTheMedia || force) { // very creative, ik. thanks.
             Log.d("MediaController", "Sending play and setting userPlayedTheMedia to false")
             userPlayedTheMedia = false
@@ -308,10 +267,6 @@ object MediaController {
         if (!audioManager.isMusicActive) {
             Log.d("MediaController", "Setting iPausedTheMedia to false")
             iPausedTheMedia = false
-        }
-        if (pausedWhileTakingOver) {
-            Log.d("MediaController", "Setting pausedWhileTakingOver to false")
-            pausedWhileTakingOver = false
         }
     }
 

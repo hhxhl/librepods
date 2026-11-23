@@ -19,12 +19,6 @@ data class AppSettingsUiState(
     val conversationAwarenessPauseMusicEnabled: Boolean = false,
     val relativeConversationAwarenessVolumeEnabled: Boolean = true,
     val disconnectWhenNotWearing: Boolean = false,
-    val takeoverWhenDisconnected: Boolean = false,
-    val takeoverWhenIdle: Boolean = false,
-    val takeoverWhenMusic: Boolean = false,
-    val takeoverWhenCall: Boolean = false,
-    val takeoverWhenRingingCall: Boolean = false,
-    val takeoverWhenMediaStart: Boolean = false,
     val useAlternateHeadTrackingPackets: Boolean = true,
     val conversationAwarenessVolume: Float = 43f,
     val showCameraDialog: Boolean = false,
@@ -137,12 +131,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 conversationAwarenessPauseMusicEnabled = sharedPreferences.getBoolean("conversation_awareness_pause_music", false),
                 relativeConversationAwarenessVolumeEnabled = sharedPreferences.getBoolean("relative_conversation_awareness_volume", true),
                 disconnectWhenNotWearing = sharedPreferences.getBoolean("disconnect_when_not_wearing", false),
-                takeoverWhenDisconnected = sharedPreferences.getBoolean("takeover_when_disconnected", false),
-                takeoverWhenIdle = sharedPreferences.getBoolean("takeover_when_idle", false),
-                takeoverWhenMusic = sharedPreferences.getBoolean("takeover_when_music", false),
-                takeoverWhenCall = sharedPreferences.getBoolean("takeover_when_call", false),
-                takeoverWhenRingingCall = sharedPreferences.getBoolean("takeover_when_ringing_call", false),
-                takeoverWhenMediaStart = sharedPreferences.getBoolean("takeover_when_media_start", false),
                 useAlternateHeadTrackingPackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true),
                 conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
@@ -173,36 +161,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     fun setDisconnectWhenNotWearing(enabled: Boolean) {
         sharedPreferences.edit { putBoolean("disconnect_when_not_wearing", enabled) }
         _uiState.update { it.copy(disconnectWhenNotWearing = enabled) }
-    }
-
-    fun setTakeoverWhenDisconnected(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_disconnected", enabled) }
-        _uiState.update { it.copy(takeoverWhenDisconnected = enabled) }
-    }
-
-    fun setTakeoverWhenIdle(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_idle", enabled) }
-        _uiState.update { it.copy(takeoverWhenIdle = enabled) }
-    }
-
-    fun setTakeoverWhenMusic(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_music", enabled) }
-        _uiState.update { it.copy(takeoverWhenMusic = enabled) }
-    }
-
-    fun setTakeoverWhenCall(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_call", enabled) }
-        _uiState.update { it.copy(takeoverWhenCall = enabled) }
-    }
-
-    fun setTakeoverWhenRingingCall(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_ringing_call", enabled) }
-        _uiState.update { it.copy(takeoverWhenRingingCall = enabled) }
-    }
-
-    fun setTakeoverWhenMediaStart(enabled: Boolean) {
-        sharedPreferences.edit { putBoolean("takeover_when_media_start", enabled) }
-        _uiState.update { it.copy(takeoverWhenMediaStart = enabled) }
     }
 
     fun setUseAlternateHeadTrackingPackets(enabled: Boolean) {

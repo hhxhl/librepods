@@ -163,8 +163,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     lateinit var attManager: ATTManagerv2
     var airpodsInstance: AirPodsInstance? = null
     var cameraActive = false
-    private var disconnectedBecauseReversed = false
-    private var otherDeviceTookOver = false
     @Volatile private var foregroundStarted = false
     @Volatile private var lastAacpBatteryMs = 0L
 
@@ -208,16 +206,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         var conversationAwarenessVolume: Int = 43,
         var qsClickBehavior: String = "cycle",
         var bleOnlyMode: Boolean = false,
-
-        // AirPods state-based takeover
-        var takeoverWhenDisconnected: Boolean = true,
-        var takeoverWhenIdle: Boolean = true,
-        var takeoverWhenMusic: Boolean = false,
-        var takeoverWhenCall: Boolean = true,
-
-        // Phone state-based takeover
-        var takeoverWhenRingingCall: Boolean = true,
-        var takeoverWhenMediaStart: Boolean = true,
 
         var leftSinglePressAction: StemAction = StemAction.defaultActions[StemPressType.SINGLE_PRESS]!!,
         var rightSinglePressAction: StemAction = StemAction.defaultActions[StemPressType.SINGLE_PRESS]!!,
@@ -267,7 +255,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val maxLogEntries = 1000
     private val inMemoryLogs = mutableSetOf<String>()
 
-    private var handleIncomingCallOnceConnected = false
 
     lateinit var bleManager: BLEManager
 
@@ -467,22 +454,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     "disconnect_when_not_wearing", false
                 )
 
-                // AirPods state-based takeover
-                if (!contains("takeover_when_disconnected")) putBoolean(
-                    "takeover_when_disconnected", false
-                )
-                if (!contains("takeover_when_idle")) putBoolean("takeover_when_idle", false)
-                if (!contains("takeover_when_music")) putBoolean("takeover_when_music", false)
-                if (!contains("takeover_when_call")) putBoolean("takeover_when_call", false)
-
-                // Phone state-based takeover
-                if (!contains("takeover_when_ringing_call")) putBoolean(
-                    "takeover_when_ringing_call", false
-                )
-                if (!contains("takeover_when_media_start")) putBoolean(
-                    "takeover_when_media_start", false
-                )
-
                 if (!contains("adaptive_strength")) putInt("adaptive_strength", 51)
                 if (!contains("tone_volume")) putInt("tone_volume", 75)
                 if (!contains("conversation_awareness_volume")) putInt(
@@ -599,26 +570,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             override fun onCallStateChanged(state: Int) {
                 when (state) {
                     TelephonyManager.CALL_STATE_RINGING -> {
-                        val leAvailableForAudio =
-                            bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true
-//                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) CoroutineScope(Dispatchers.IO).launch {
-                        if (leAvailableForAudio) runBlocking {
-                            takeOver("call")
-                        }
                         if (config.headGestures) {
                             handleIncomingCall()
                         }
                     }
 
                     TelephonyManager.CALL_STATE_OFFHOOK -> {
-                        val leAvailableForAudio =
-                            bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true
-//                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) CoroutineScope(
-                        if (leAvailableForAudio) CoroutineScope(
-                            Dispatchers.IO
-                        ).launch {
-                            takeOver("call")
-                        }
                         isInCall = true
                     }
 
@@ -888,7 +845,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
                 // Battery updates are informational. Connecting or disconnecting A2DP
                 // for every report can repeatedly perturb an already-active audio link.
-                // Audio routing remains driven by ear-state transitions and explicit takeover.
+                // Audio routing remains driven by Android and ear-state transitions.
             }
 
             override fun onEarDetectionReceived(earDetection: ByteArray) {
@@ -948,7 +905,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     Log.d(TAG, "ownership lost")
                     MediaController.sendPause()
                     MediaController.pausedForOtherDevice = true
-                    otherDeviceTookOver = true
                     disconnectAudio(
                         this@AirPodsService, device
                     )
@@ -956,54 +912,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onOwnershipToFalseRequest(sender: String, reasonReverseTapped: Boolean) {
-                // TODO: Show a reverse button, but that's a lot of effort -- i'd have to change the UI too, which i hate doing, and handle other device's reverses too, and disconnect audio etc... so for now, just pause the audio and show the island without asking to reverse.
-                // handling reverse is a problem because we'd have to disconnect the audio, but there's no option connect audio again natively, so notification would have to be changed. I wish there was a way to just "change the audio output device".
-                // (20 minutes later) i've done it nonetheless :]
+                // Passive handoff only: never request the audio source back automatically.
                 val senderName =
                     aacpManager.connectedDevices.find { it.mac == sender }?.type ?: "Other device"
-                Log.d(
-                    TAG,
-                    "other device has hijacked the connection, reasonReverseTapped: $reasonReverseTapped"
-                )
+                Log.d(TAG, "Other device requested ownership: $sender, reverseTapped=$reasonReverseTapped")
                 aacpManager.sendControlCommand(
                     AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
                     byteArrayOf(0x00)
                 )
-                otherDeviceTookOver = true
-                disconnectAudio(
-                    this@AirPodsService, device
+                disconnectAudio(this@AirPodsService, device)
+                showIsland(
+                    this@AirPodsService,
+                    (batteryNotification.getBattery()
+                        .find { it.component == BatteryComponent.LEFT }?.level ?: 0).coerceAtMost(
+                        batteryNotification.getBattery()
+                            .find { it.component == BatteryComponent.RIGHT }?.level ?: 0
+                    ),
+                    IslandType.MOVED_TO_OTHER_DEVICE,
+                    otherDeviceName = senderName
                 )
-                if (reasonReverseTapped) {
-                    Log.d(TAG, "reverse tapped, disconnecting audio")
-                    disconnectedBecauseReversed = true
-                    disconnectAudio(this@AirPodsService, device)
-                    showIsland(
-                        this@AirPodsService,
-                        (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.LEFT }?.level
-                            ?: 0).coerceAtMost(
-                            batteryNotification.getBattery()
-                                .find { it.component == BatteryComponent.RIGHT }?.level ?: 0
-                        ),
-                        IslandType.MOVED_TO_OTHER_DEVICE,
-                        reversed = true,
-                        otherDeviceName = senderName
-                    )
-                }
-                if (!aacpManager.owns) {
-                    showIsland(
-                        this@AirPodsService,
-                        (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.LEFT }?.level
-                            ?: 0).coerceAtMost(
-                            batteryNotification.getBattery()
-                                .find { it.component == BatteryComponent.RIGHT }?.level ?: 0
-                        ),
-                        IslandType.MOVED_TO_OTHER_DEVICE,
-                        reversed = reasonReverseTapped,
-                        otherDeviceName = senderName
-                    )
-                }
                 MediaController.sendPause()
             }
 
@@ -1018,7 +945,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             .find { it.component == BatteryComponent.RIGHT }?.level ?: 0
                     ),
                     IslandType.MOVED_TO_OTHER_DEVICE,
-                    reversed = false,
                     otherDeviceName = senderName
                 )
             }
@@ -1140,7 +1066,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     // this also means that the other device has start playing the audio, and if that's true, we can again start listening for audio config changes
 //                    Log.d(TAG, "Another device started playing audio, listening for audio config changes again")
 //                    MediaController.pausedForOtherDevice = false
-// future me: what the heck is this? this just means it will not be taking over again if audio source doesn't change???
                 }
             }
 
@@ -1397,22 +1322,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             ),
             qsClickBehavior = sharedPreferences.getString("qs_click_behavior", "cycle") ?: "cycle",
 
-            // AirPods state-based takeover
-            takeoverWhenDisconnected = sharedPreferences.getBoolean(
-                "takeover_when_disconnected", false
-            ),
-            takeoverWhenIdle = sharedPreferences.getBoolean("takeover_when_idle", false),
-            takeoverWhenMusic = sharedPreferences.getBoolean("takeover_when_music", false),
-            takeoverWhenCall = sharedPreferences.getBoolean("takeover_when_call", false),
-
-            // Phone state-based takeover
-            takeoverWhenRingingCall = sharedPreferences.getBoolean(
-                "takeover_when_ringing_call", false
-            ),
-            takeoverWhenMediaStart = sharedPreferences.getBoolean(
-                "takeover_when_media_start", false
-            ),
-
             // Stem actions
             leftSinglePressAction = StemAction.fromString(
                 sharedPreferences.getString(
@@ -1513,21 +1422,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             "qs_click_behavior" -> config.qsClickBehavior =
                 preferences.getString(key, "cycle") ?: "cycle"
-
-            // AirPods state-based takeover
-            "takeover_when_disconnected" -> config.takeoverWhenDisconnected =
-                preferences.getBoolean(key, true)
-
-            "takeover_when_idle" -> config.takeoverWhenIdle = preferences.getBoolean(key, true)
-            "takeover_when_music" -> config.takeoverWhenMusic = preferences.getBoolean(key, false)
-            "takeover_when_call" -> config.takeoverWhenCall = preferences.getBoolean(key, true)
-
-            // Phone state-based takeover
-            "takeover_when_ringing_call" -> config.takeoverWhenRingingCall =
-                preferences.getBoolean(key, true)
-
-            "takeover_when_media_start" -> config.takeoverWhenMediaStart =
-                preferences.getBoolean(key, true)
 
             "left_single_press_action" -> {
                 config.leftSinglePressAction = StemAction.fromString(
@@ -1705,7 +1599,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         service: Service,
         batteryPercentage: Int,
         type: IslandType = IslandType.CONNECTED,
-        reversed: Boolean = false,
         otherDeviceName: String? = null
     ) {
         Log.d(TAG, "Showing island window")
@@ -1723,7 +1616,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 batteryPercentage,
                 this@AirPodsService,
                 type,
-                reversed,
                 otherDeviceName
             )
         }
@@ -2097,16 +1989,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     }""").setContentIntent(pendingIntent).setCategory(Notification.CATEGORY_STATUS)
                     .setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true)
 
-            if (disconnectedBecauseReversed) {
-                updatedNotificationBuilder.addAction(
-                    R.drawable.ic_bluetooth, "Reconnect", PendingIntent.getService(
-                        this, 0, Intent(this, AirPodsService::class.java).apply {
-                            action = "me.kavishdevar.librepods.RECONNECT_AFTER_REVERSE"
-                        }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                )
-            }
-
             val updatedNotification = updatedNotificationBuilder.build()
 
             notificationManager.notify(if (foregroundStarted) 1 else 2, updatedNotification)
@@ -2126,10 +2008,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             gestureDetector?.startDetection { accepted ->
                 if (accepted) {
                     answerCall()
-                    handleIncomingCallOnceConnected = false
                 } else {
                     rejectCall()
-                    handleIncomingCallOnceConnected = false
                 }
             }
 
@@ -2489,209 +2369,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service started with intent action: ${intent?.action}")
 
-        if (intent?.action == "me.kavishdevar.librepods.RECONNECT_AFTER_REVERSE") {
-            Log.d(TAG, "reconnect after reversed received, taking over")
-            disconnectedBecauseReversed = false
-            otherDeviceTookOver = false
-            takeOver("music", manualTakeOverAfterReversed = true)
-        }
-
         if (intent?.action == ACTION_DEVICE_CONNECTED && !foregroundStarted) {
             startForegroundNotification()
         }
         // No restart until the OS reports another physical Bluetooth connection.
         return START_NOT_STICKY
-    }
-
-    @RequiresApi(Build.VERSION_CODES.R)
-    @SuppressLint("MissingPermission", "HardwareIds")
-    fun takeOver(
-        takingOverFor: String,
-        manualTakeOverAfterReversed: Boolean = false,
-        startHeadTrackingAgain: Boolean = false
-    ) {
-        AudioSwitchTrace.event(
-            "Takeover", "requested",
-            "reason=$takingOverFor localMacKnown=${localMac.isNotEmpty()} socketConnected=${BluetoothConnectionManager.aacpSocket?.isConnected == true} " +
-                "owns=${aacpManager.owns} source=${aacpManager.audioSource?.mac}/${aacpManager.audioSource?.type} " +
-                "mediaEnabled=${config.takeoverWhenMediaStart} callEnabled=${config.takeoverWhenRingingCall}"
-        )
-        if (takingOverFor == "reverse") {
-            aacpManager.sendControlCommand(
-                AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
-            )
-            aacpManager.sendMediaInformataion(
-                localMac
-            )
-            aacpManager.sendHijackReversed(
-                localMac
-            )
-            connectAudio(
-                this@AirPodsService, device
-            )
-            otherDeviceTookOver = false
-        }
-        val ownsConnection = aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value?.get(0)?.toInt()
-        Log.d(
-            TAG, "owns connection: $ownsConnection"
-        )
-        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
-            if (ownsConnection == 0) {
-                Log.d(TAG, "not taking over: ownership unavailable")
-                return
-            }
-            if (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value[0]?.toInt() != 1 || (aacpManager.audioSource?.mac != localMac && aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)) {
-                if (disconnectedBecauseReversed) {
-                    if (manualTakeOverAfterReversed) {
-                        Log.d(TAG, "forcefully taking over despite reverse as user requested")
-                        disconnectedBecauseReversed = false
-                    } else {
-                        Log.d(
-                            TAG,
-                            "connected locally, but can not hijack as other device had reversed"
-                        )
-                        return
-                    }
-                }
-
-                AudioSwitchTrace.event("Takeover", "sending_hijack", "reason=$takingOverFor source=${aacpManager.audioSource?.mac}/${aacpManager.audioSource?.type}")
-                Log.d(TAG, "already connected locally, hijacking connection by asking AirPods")
-                aacpManager.sendControlCommand(
-                    AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
-                )
-                aacpManager.sendMediaInformataion(
-                    localMac
-                )
-                aacpManager.sendSmartRoutingShowUI(
-                    localMac
-                )
-                aacpManager.sendHijackRequest(
-                    localMac
-                )
-                otherDeviceTookOver = false
-                connectAudio(this, device)
-                showIsland(
-                    this,
-                    batteryNotification.getBattery()
-                        .find { it.component == BatteryComponent.LEFT }?.level!!.coerceAtMost(
-                            batteryNotification.getBattery()
-                                .find { it.component == BatteryComponent.RIGHT }?.level!!
-                        ),
-                    IslandType.CONNECTED
-                )
-
-                CoroutineScope(Dispatchers.IO).launch {
-                    delay(500) // a2dp takes time, and so does taking control + AirPods pause it for no reason after connecting
-                    if (takingOverFor == "music") {
-                        Log.d(TAG, "Resuming music after taking control")
-                        MediaController.sendPlay(replayWhenPaused = true)
-                    } else if (startHeadTrackingAgain) {
-                        Log.d(TAG, "Starting head tracking again after taking control")
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            startHeadTracking()
-                        }, 500)
-                    }
-                    delay(1000) // should ideally have a callback when it's taken over because for some reason android doesn't dispatch when it's paused
-                    if (takingOverFor == "music") {
-                        Log.d(TAG, "resuming again just in case")
-                        MediaController.sendPlay(force = true)
-                    }
-                }
-            } else {
-                Log.d(
-                    TAG, "Already connected locally and already own connection, skipping takeover"
-                )
-            }
-            return
-        }
-
-//        if (CrossDevice.isAvailable) {
-//            Log.d(TAG, "CrossDevice is available, continuing")
-//        }
-//        else if (bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true) {
-//            Log.d(TAG, "At least one AirPod is in ear, continuing")
-//        }
-//        else {
-//            Log.d(TAG, "CrossDevice not available and AirPods not in ear, skipping")
-//            return
-//        }
-
-        if (bleManager.getMostRecentStatus()?.isLeftInEar == false && bleManager.getMostRecentStatus()?.isRightInEar == false) {
-            Log.d(TAG, "Both AirPods are out of ear, not taking over audio")
-            return
-        }
-
-        val shouldTakeOverPState = when (takingOverFor) {
-            "music" -> config.takeoverWhenMediaStart
-            "call" -> config.takeoverWhenRingingCall
-            else -> false
-        }
-
-        if (!shouldTakeOverPState) {
-            Log.d(TAG, "Not taking over audio, phone state takeover disabled")
-            return
-        }
-
-        val shouldTakeOver = when (bleManager.getMostRecentStatus()?.connectionState) {
-            "Disconnected" -> config.takeoverWhenDisconnected
-            "Idle" -> config.takeoverWhenIdle
-            "Music" -> config.takeoverWhenMusic
-            "Call" -> config.takeoverWhenCall
-            "Ringing" -> config.takeoverWhenCall
-            "Hanging Up" -> config.takeoverWhenCall
-            else -> false
-        }
-
-        if (!shouldTakeOver) {
-            Log.d(TAG, "Not taking over audio, airpods state takeover disabled")
-            return
-        }
-
-        if (takingOverFor == "music") {
-            Log.d(TAG, "Pausing music so that it doesn't play through speakers")
-            MediaController.pausedWhileTakingOver = true
-            MediaController.sendPause(true)
-        } else {
-            handleIncomingCallOnceConnected = true
-        }
-
-        Log.d(TAG, "Taking over audio")
-//        CrossDevice.sendRemotePacket(CrossDevicePackets.REQUEST_DISCONNECT.packet)
-        Log.d(TAG, macAddress)
-
-//        sharedPreferences.edit { putBoolean("CrossDeviceIsAvailable", false) }
-        val bluetoothManager = getSystemService(BluetoothManager::class.java)
-        val bluetoothAdapter = bluetoothManager.adapter
-        device = bluetoothAdapter.bondedDevices.find {
-            it.address == macAddress
-        }
-
-        if (device != null) {
-            if (config.bleOnlyMode) {
-                // In BLE-only mode, just show connecting status without actual L2CAP connection
-                Log.d(TAG, "BLE-only mode: showing connecting status without L2CAP connection")
-                updateNotificationContent(
-                    true, config.deviceName, batteryNotification.getBattery()
-                )
-                // Set a temporary connecting state
-//                isConnectedLocally = false // Keep as false since we're not actually connecting to L2CAP
-            } else {
-                connectToSocket(bluetoothAdapter, device!!)
-                connectAudio(this, device)
-//                isConnectedLocally = true
-            }
-        }
-        showIsland(
-            this,
-            batteryNotification.getBattery()
-                .find { it.component == BatteryComponent.LEFT }?.level!!.coerceAtMost(
-                    batteryNotification.getBattery()
-                        .find { it.component == BatteryComponent.RIGHT }?.level!!
-                ),
-            IslandType.TAKING_OVER
-        )
-
-//        CrossDevice.isAvailable = false
     }
 
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
@@ -2831,13 +2513,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     aacpManager.sendSomePacketIDontKnowWhatItIs()
                     delay(200)
                     aacpManager.sendRequestProximityKeys((AACPManager.Companion.ProximityKeyType.IRK.value + AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte())
-                    if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
+                    startHeadTracking()
                     Handler(Looper.getMainLooper()).postDelayed({
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                         aacpManager.sendSetFeatureFlagsPacket()
                         aacpManager.sendNotificationRequest()
                         aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
-                        if (!handleIncomingCallOnceConnected) stopHeadTracking()
+                        stopHeadTracking()
                     }, 5000)
 
                     sendBroadcast(
@@ -2918,7 +2600,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     fun disconnectForCD() {
         BluetoothConnectionManager.aacpSocket?.close()
-        MediaController.pausedWhileTakingOver = false
         Log.d(TAG, "Disconnected from AirPods, showing island.")
         showIsland(
             this,
@@ -3117,9 +2798,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             e.printStackTrace()
                         } finally {
                             bluetoothAdapter.closeProfileProxy(BluetoothProfile.A2DP, proxy)
-                            if (MediaController.pausedWhileTakingOver) {
-                                MediaController.sendPlay()
-                            }
                         }
                     }
                     else {
@@ -3254,15 +2932,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         isHeadTrackingActive = true
         val useAlternatePackets =
             sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && aacpManager.getControlCommandStatus(
-                AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION
-            )?.value?.get(0)?.toInt() != 1
-        ) {
-            takeOver("call", startHeadTrackingAgain = true)
-            Log.d(TAG, "Taking over for head tracking")
-        } else {
-            Log.w(TAG, "Will not be taking over for head tracking, might not work.")
-        }
         if (useAlternatePackets) {
             aacpManager.sendDataPacket(aacpManager.createAlternateStartHeadTrackingPacket())
         } else {
